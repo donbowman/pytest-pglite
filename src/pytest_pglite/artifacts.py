@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shutil
 import tarfile
+from collections.abc import Iterator
 from pathlib import Path
 
 from platformdirs import user_cache_dir
@@ -77,6 +79,20 @@ def _extract_tar(path: Path, destination: Path) -> None:
         archive.extractall(destination, filter="data")
 
 
+@contextlib.contextmanager
+def _cache_lock(lock_path: Path) -> Iterator[None]:
+    """Serialise cold-start extraction of one artifact across processes."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as handle:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - non-POSIX platforms
+            pass
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 def ensure_prefix(
     wasm_path: Path | None = None, use_cache: bool = True
 ) -> tuple[Path, str]:
@@ -85,6 +101,10 @@ def ensure_prefix(
     ``prefix_root`` contains ``bin/pglite.wasi`` plus the ``share`` and ``lib``
     trees the WASM module needs. For the bundled artifact the tarball is
     verified and extracted once into the user cache directory.
+
+    Cold-start extraction is protected by a per-artifact file lock and the
+    result is published with an atomic rename, so concurrent workers (for
+    example pytest-xdist processes) never observe a half-written prefix.
     """
     if wasm_path is not None:
         candidate = wasm_path.expanduser()
@@ -99,17 +119,46 @@ def ensure_prefix(
 
     path = artifact_path()
     digest = verify_artifact(path)
-    cache_root = Path(user_cache_dir("pytest-pglite")) / "artifacts" / digest[:16]
+    cache_parent = Path(user_cache_dir("pytest-pglite")) / "artifacts"
+    cache_root = cache_parent / digest[:16]
     marker = cache_root / ".complete"
     prefix = cache_root / PREFIX_RELATIVE
-    if not (use_cache and marker.is_file() and (prefix / WASM_RELATIVE).is_file()):
-        if cache_root.exists():
-            shutil.rmtree(cache_root, ignore_errors=True)
-        for tarball in artifact_paths():
-            if tarball.is_file():
-                verify_artifact(tarball)
-                _extract_tar(tarball, cache_root)
-        marker.write_text(digest, encoding="utf-8")
+
+    def cached() -> bool:
+        return use_cache and marker.is_file() and (prefix / WASM_RELATIVE).is_file()
+
+    if cached():
+        return prefix, digest
+
+    cache_parent.mkdir(parents=True, exist_ok=True)
+    with _cache_lock(cache_parent / f"{cache_root.name}.lock"):
+        # Another worker may have finished while we waited for the lock.
+        if cached():
+            return prefix, digest
+
+        # Extract into a private staging directory and publish it with an
+        # atomic rename; readers only ever see the finished tree.  Any other
+        # staging directory for this artifact is a leftover from an aborted
+        # extraction and is safe to remove under the lock.
+        for stale in cache_parent.glob(f".staging-{cache_root.name}-*"):
+            shutil.rmtree(stale, ignore_errors=True)
+        staging = cache_parent / f".staging-{cache_root.name}-{os.getpid()}"
+        try:
+            for tarball in artifact_paths():
+                if tarball.is_file():
+                    verify_artifact(tarball)
+                    _extract_tar(tarball, staging)
+            extracted = staging / PREFIX_RELATIVE / WASM_RELATIVE
+            if not extracted.is_file():
+                raise PGliteArtifactError(
+                    f"extracted artifact is missing {PREFIX_RELATIVE / WASM_RELATIVE}"
+                )
+            (staging / ".complete").write_text(digest, encoding="utf-8")
+            if cache_root.exists():
+                shutil.rmtree(cache_root)
+            os.replace(staging, cache_root)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
     return prefix, digest
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "pytest-pglite"
-version = "0.2.0"
+version = "0.2.1"
 description = "Native PGlite (PostgreSQL in WebAssembly) for Python test suites, with first-class pytest integration"
 readme = "README.md"
 requires-python = ">=3.14"
