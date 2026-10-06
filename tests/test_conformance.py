@@ -219,3 +219,26 @@ def test_generated_columns_and_views(conn: object) -> None:
     conn.execute("create view gen_view as select a, total from gen")
     assert conn.execute("select total from gen_view").fetchone() == (5,)
     conn.rollback()
+
+
+def test_create_index_concurrently_if_not_exists(server: PGliteServer) -> None:
+    """Documented workaround for the missing concurrent index support.
+
+    ``CREATE INDEX CONCURRENTLY`` itself fails on the single-backend WASI
+    port (PGlite #901), but an ``IF NOT EXISTS`` concurrent statement
+    short-circuits when the index is pre-created.  Migration frameworks that
+    pre-create indexes out-of-band rely on exactly this behaviour.
+    """
+    with psycopg.connect(server.dsn, autocommit=True) as conn:
+        conn.execute("create table cic_demo (id int, name text)")
+        conn.execute("insert into cic_demo values (1, 'a')")
+        conn.execute("create index if not exists cic_demo_name_idx on cic_demo (name)")
+        conn.execute(
+            "create index concurrently if not exists cic_demo_name_idx "
+            "on cic_demo (name)"
+        )
+        row = conn.execute(
+            "select indisvalid from pg_index "
+            "where indexrelid = 'cic_demo_name_idx'::regclass"
+        ).fetchone()
+        assert row == (True,)

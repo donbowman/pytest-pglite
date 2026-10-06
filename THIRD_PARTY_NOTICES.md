@@ -5,13 +5,15 @@ PGlite. The following components are included or depended upon.
 
 ## Redistributed artifacts
 
-### PGlite (`src/pytest_pglite/_wasm/pglite-17.5.20250726.tar.xz`)
+### PGlite (`src/pytest_pglite/_wasm/pglite-17.5.20261006b.tar.xz`)
 
-The bundled `pglite.wasi` module and its prefix files are built from the
+The bundled `pglite.wasi` module and its prefix files are built by this
+project's pipeline from the
 [electric-sql/pglite-build](https://github.com/electric-sql/pglite-build)
 project (`portable` branch), which patches and builds the
 [electric-sql/postgres-pglite](https://github.com/electric-sql/postgres-pglite)
-PostgreSQL fork, itself derived from PostgreSQL.
+PostgreSQL fork, itself derived from PostgreSQL. See
+`src/pytest_pglite/_wasm/PROVENANCE.md` for the exact patches.
 
 - PGlite client library: Apache License 2.0 OR the PostgreSQL License.
 - postgres-pglite changes: PostgreSQL License.
@@ -34,6 +36,9 @@ The PostgreSQL License text is reproduced at the end of this file.
   WITH LLVM-exception (toolchain, used to produce the bundled module).
 - [pgvector](https://github.com/pgvector/pgvector) - PostgreSQL License
   (compiled into the bundled module).
+- [pg_trgm](https://www.postgresql.org/docs/current/pgtrgm.html) - part of the
+  PostgreSQL contrib modules, PostgreSQL License (compiled into the bundled
+  module).
 - [PostgreSQL](https://www.postgresql.org/) - PostgreSQL License.
 
 ## PostgreSQL License
