@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+# Note: build/ is the WASM build pipeline and is tracked; Python build output
+# goes to dist/ and .venv/.
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+*.log
+# Local scratch
+/tmp/
+.DS_Store

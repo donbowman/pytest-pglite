@@ -1,0 +1,32 @@
+name: Build WASM artifact
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build pglite.wasi with pgvector
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      # Upstream defaults to `make -j$(nproc)`; keep the runner within memory.
+      PGLITE_JOBS: "4"
+    steps:
+      - uses: actions/checkout@v5
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lz4 wget xz-utils patch file
+      - name: Build
+        run: bash build/scripts/build-wasi.sh
+      - name: Checksums
+        run: |
+          cd /tmp/opencode/pglite-build/dist-REL_17_5_WASM
+          sha256sum pglite.wasi pglite-wasi.tar.xz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pglite-wasi
+          path: |
+            /tmp/opencode/pglite-build/dist-REL_17_5_WASM/pglite.wasi
+            /tmp/opencode/pglite-build/dist-REL_17_5_WASM/pglite-wasi.tar.xz
+          if-no-files-found: error

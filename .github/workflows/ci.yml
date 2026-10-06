@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Install dependencies
+        run: poetry install --all-extras
+      - name: black
+        run: poetry run black --check src tests examples
+      - name: flake8
+        run: poetry run flake8 src tests examples
+      - name: mypy
+        run: poetry run mypy
+
+  test:
+    name: Tests (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Install dependencies
+        run: poetry install --all-extras
+      - name: Cache PGlite artifact cache (AOT + template)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pytest-pglite
+            ~/Library/Caches/pytest-pglite
+          key: pglite-cache-${{ runner.os }}-${{ hashFiles('poetry.lock', 'src/pytest_pglite/_wasm/SHA256SUMS') }}
+      - name: Install psql (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Test suite with xdist
+        run: poetry run pytest -n 4 -q
+      - name: Examples
+        run: |
+          poetry run pytest examples/fastapi-sqlalchemy -q
+          poetry run pytest examples/fastapi-async-sqlalchemy -q
+          poetry run pytest examples/asyncpg -q
+          poetry run pytest examples/alembic -q
+          poetry run pytest examples/django -q
+
+  wheel:
+    name: Build and smoke-test the wheel
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Build
+        run: poetry build
+      - name: Install the wheel into a clean venv
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install --upgrade pip
+          /tmp/wheel-venv/bin/pip install dist/*.whl
+      - name: Smoke test the installed wheel
+        run: |
+          /tmp/wheel-venv/bin/python - <<'PY'
+          from pytest_pglite import PGliteConfig, PGliteServer
+
+          with PGliteServer(PGliteConfig()) as server:
+              assert server.execute("select 1 as one") == [["1"]]
+          print("wheel smoke test passed")
+          PY
