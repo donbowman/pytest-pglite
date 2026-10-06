@@ -12,8 +12,7 @@ from platformdirs import user_cache_dir
 
 from .errors import PGliteArtifactError
 
-ARTIFACT_FILENAME = "pglite-17.5.20250726.tar.xz"
-PREFIX_FILENAME = "pglite-prefix-17.5.tar.xz"
+ARTIFACT_FILENAME = "pglite-17.5.20261006b.tar.xz"
 WASM_DIR = Path(__file__).resolve().parent / "_wasm"
 PREFIX_RELATIVE = Path("tmp") / "pglite"
 WASM_RELATIVE = Path("bin") / "pglite.wasi"
@@ -26,7 +25,7 @@ def artifact_path() -> Path:
 
 def artifact_paths() -> tuple[Path, ...]:
     """All vendored tarballs, in extraction order."""
-    return tuple(WASM_DIR / name for name in (ARTIFACT_FILENAME, PREFIX_FILENAME))
+    return (artifact_path(),)
 
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:

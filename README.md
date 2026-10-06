@@ -28,6 +28,9 @@ def test_users(pglite_engine):
 - **Async ready** - the server is asyncio based; async fixtures are provided
   for FastAPI, httpx and other async test suites.
 - **pgvector** - `CREATE EXTENSION vector` works out of the box.
+
+- **pg_trgm** - `CREATE EXTENSION pg_trgm` works out of the box, with the
+  `similarity()` functions, the `%` operator and GIN/GiST trigram indexes.
 - **Fast** - a warm worker starts in well under a second; per-test isolation
   resets take milliseconds.
 
@@ -54,6 +57,7 @@ point, so there is nothing to import or configure.
 | `pglite_url` | session | SQLAlchemy URL string |
 | `pglite_conn` | function | `psycopg.Connection` with a freshly reset schema |
 | `pglite_async_conn` | function | `psycopg.AsyncConnection` with a freshly reset schema |
+| `pglite_asyncpg` | function | `asyncpg.Connection` with a freshly reset schema |
 | `pglite_engine` | function | SQLAlchemy `Engine` with a freshly reset schema |
 | `pglite_execute` | function | Callable that runs SQL and returns rows |
 
@@ -73,6 +77,23 @@ point, so there is nothing to import or configure.
 All options can also be set with environment variables using the `PGLITE_`
 prefix, for example `PGLITE_ISOLATION=transaction`.
 
+## Standalone server
+
+The same engine can run outside pytest, for example for a manual psql session
+or a development server:
+
+```bash
+pytest-pglite --tcp-address 127.0.0.1:0 --extensions vector
+# PGlite ready: postgresql://postgres:password@127.0.0.1:54321/template1?sslmode=disable
+```
+
+```python
+from pytest_pglite import PGliteConfig, PGliteServer
+
+with PGliteServer(PGliteConfig(tcp=True)) as server:
+    print(server.dsn)
+```
+
 ## xdist
 
 Each `pytest-xdist` worker process starts its own PGlite instance with its own
@@ -81,9 +102,12 @@ There are no shared paths and no port collisions, so `pytest -n 4` just works.
 
 ## How it works
 
-The package embeds `pglite.wasi`, a WebAssembly build of PostgreSQL 17.5
-produced by [electric-sql/pglite-build](https://github.com/electric-sql/pglite-build).
-A small engine wrapper drives the WASI module through Wasmtime. On top of the
+The package embeds `pglite.wasi`, a WebAssembly build of PostgreSQL 17.5 with
+pgvector and pg_trgm statically linked. It is built from
+[electric-sql/pglite-build](https://github.com/electric-sql/pglite-build) by
+the pipeline in `build/` (see `build/README.md` for the patches and
+provenance). A small engine wrapper drives the WASI module through Wasmtime.
+On top of the
 single-user backend, an asyncio Postgres wire-protocol proxy manages client
 connections: each connection is a logical session, and protocol exchanges are
 serialised through a query queue. Statements and portals are renamed per
@@ -117,9 +141,19 @@ the platform cache directory; `pytest-xdist` workers share them.
   holding an open transaction blocks others until it commits or rolls back.
   Waiting connections time out with SQLSTATE 57014 after `queue_timeout`
   seconds (default 60).
+- Session state is shared: `SET search_path`, `SET timezone` and similar
+  run-time parameters affect every connection because they share one backend
+  session. Use `SET LOCAL` inside a transaction for per-test values.
 - PostgreSQL wire-protocol server features are limited to what test suites
   need: `LISTEN/NOTIFY` delivery is not implemented, and cancellation requests
   are accepted but not acted on.
+
+- `CREATE INDEX CONCURRENTLY` and `DROP INDEX CONCURRENTLY` are not supported.
+  The single-backend WASI port has no `setjmp`/`longjmp`, and the concurrent
+  build's internal transaction machinery aborts with `tuple concurrently
+  updated` (upstream [PGlite #901](https://github.com/electric-sql/pglite/issues/901)).
+  Use a plain `CREATE INDEX`, or pre-create the index so an `IF NOT EXISTS`
+  concurrent statement short-circuits.
 - `COPY TO STDOUT` works; `COPY FROM STDIN` is rejected with SQLSTATE 0A000
   because libpglite's synchronous transport cannot stream `CopyData` during
   `CopyFrom`.
@@ -128,7 +162,7 @@ the platform cache directory; `pytest-xdist` workers share them.
   SQLSTATE, then restarts the backend over the same data directory when the
   session cannot be recovered.
 - Extensions are compiled into the WASM module at build time; only the
-  bundled set (`plpgsql`, `vector`) can be created.
+  bundled set (`plpgsql`, `vector`, `pg_trgm`) can be created.
 - No Windows support for Unix sockets; use `--pglite-tcp` on Windows.
 
 ## Development
