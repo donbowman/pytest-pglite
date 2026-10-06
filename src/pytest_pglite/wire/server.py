@@ -80,6 +80,34 @@ async def read_frontend_message(
     return mtype, payload
 
 
+def buffered_message_ready(reader: asyncio.StreamReader) -> bool:
+    """True when the reader already holds one complete frontend message.
+
+    ``asyncio.StreamReader`` has no public peek API; the private ``_buffer``
+    has been stable for many releases and is the only way to tell whether a
+    pipelined batch has arrived without waiting.  When the attribute is
+    unavailable this returns False and the caller keeps the one-message-at-a-
+    time behaviour.
+    """
+    buffer = getattr(reader, "_buffer", None)
+    if not buffer:
+        return False
+    data: bytes = bytes(buffer)
+    if len(data) < 5:
+        return False
+    length = int(struct.unpack("!I", data[1:5])[0])
+    return 4 <= length <= _MAX_MESSAGE_LENGTH and len(data) >= 1 + length
+
+
+def buffered_message_type(reader: asyncio.StreamReader) -> bytes | None:
+    """Return the type byte of the next buffered message, if any."""
+    raw = getattr(reader, "_buffer", None)
+    if not raw:
+        return None
+    data: bytes = bytes(raw)
+    return data[:1]
+
+
 class BackendLease:
     """Single-owner advisory lock around the shared backend session."""
 
@@ -339,6 +367,39 @@ class WireServer:
             if not await self._converse(state, reader, writer, outbound):
                 return
 
+    async def _coalesce_pipeline(
+        self,
+        state: ConnState,
+        reader: asyncio.StreamReader,
+        pending: bytes,
+    ) -> bytes:
+        """Append pipelined messages that have already arrived.
+
+        Extended-protocol clients (psycopg3, asyncpg, SQLAlchemy) send
+        Parse/Bind/Describe/Execute/Sync back to back in one write.  Driving
+        the Wasmtime backend once per message costs a round trip each;
+        coalescing the messages already buffered into a single exchange cuts
+        a typical parameterless query from five backend calls to one.  Never
+        blocks: it only consumes messages already present in the stream
+        buffer, so a client that sends a pipeline in pieces still works.
+        """
+        if not state.pipeline_open:
+            return pending
+        parts = [pending]
+        while state.pipeline_open and buffered_message_ready(reader):
+            if buffered_message_type(reader) == FE_TERMINATE:
+                # Leave it for _serve; the batch is the data to process now.
+                break
+            message = await read_frontend_message(reader)
+            if message is None:
+                break
+            mtype, payload = message
+            self._log.debug(
+                "c%d <- %s (coalesced)", state.cid, mtype.decode("ascii", "replace")
+            )
+            parts.append(rewrite_frontend(state, mtype, payload))
+        return b"".join(parts)
+
     async def _converse(
         self,
         state: ConnState,
@@ -348,6 +409,7 @@ class WireServer:
     ) -> bool:
         """Feed messages to the backend until the exchange completes."""
         while True:
+            pending = await self._coalesce_pipeline(state, reader, pending)
             reply, ready, _trapped = await self._exchange(state, pending)
             if reply:
                 writer.write(reply)

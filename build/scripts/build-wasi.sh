@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Build pglite.wasi with pgvector statically linked.
+# Build pglite.wasi with pgvector and pg_trgm statically linked.
 #
 # Reproduces the upstream electric-sql/pglite-build "portable" pipeline with
-# three patches:
-#   * build static extra extensions in WASI mode
-#   * register pgvector symbols in the dlopen/dlsym shim
-#   * clear ActivePortal during trap recovery in libpglite
+# one patch that:
+#   * builds static extra extensions in WASI mode
+#   * registers the statically linked extension symbols (pgvector, pg_trgm)
+#     in the dlopen/dlsym shim
+#   * clears ActivePortal during trap recovery in libpglite
+#   * bounds the core compile parallelism
 #
 # Requirements: Linux x86_64, ~5 GB free disk, network access. The build uses
 # the proot-based Alpine container shipped by pglite-build (no Docker daemon
@@ -43,7 +45,7 @@ git -C "${BUILD_DIR}" fetch --all --tags
 git -C "${BUILD_DIR}" checkout --force "${PGLITE_BUILD_PIN}"
 git -C "${BUILD_DIR}" clean -fdx
 
-git -C "${BUILD_DIR}" apply "${REPO_ROOT}/build/patches/0001-vector-static.patch"
+git -C "${BUILD_DIR}" apply "${REPO_ROOT}/build/patches/0001-static-extensions.patch"
 
 # The proot container keeps the installed postgres prefix in /tmp/fs between
 # runs, while the build tree is cleaned above. Remove the stale install marker
@@ -56,9 +58,9 @@ rm -rf "${CONTAINER_PATH}/tmp/pglite/pg.wasi.installed" \
        "${CONTAINER_PATH}/tmp/pglite/lib" \
        "${CONTAINER_PATH}/tmp/pglite/bin"
 
-cp "${REPO_ROOT}/build/extra/vector-wasi.sh" "${BUILD_DIR}/extra/"
-cp "${REPO_ROOT}/build/scripts/gen_vector_symbols.py" "${BUILD_DIR}/wasm-build/"
-chmod +x "${BUILD_DIR}/extra/vector-wasi.sh"
+cp "${REPO_ROOT}/build/extra/extensions-wasi.sh" "${BUILD_DIR}/extra/"
+cp "${REPO_ROOT}/build/scripts/gen_extension_symbols.py" "${BUILD_DIR}/wasm-build/"
+chmod +x "${BUILD_DIR}/extra/extensions-wasi.sh"
 
 # PG_EXTRA is build-<branch>/extra-wasi inside the container; keep the sources
 # where the patched build expects them.
@@ -73,6 +75,9 @@ if [ ! -d "${PG_EXTRA_DIR}/vector/src" ]; then
 fi
 
 cd "${BUILD_DIR}"
+# The 0001 patch makes the WASI release build compile the PostgreSQL core at
+# -O2 (upstream leaves the core CFLAGS without an optimization level, so
+# clang defaults to -O0 and SQL execution is roughly twice as slow).
 WASI=true CI=true DEBUG=false \
 PG_VERSION="${PG_VERSION}" PG_BRANCH="${PG_BRANCH}" \
     nice -n 10 bash ./ci-alpine-proot.sh
@@ -83,4 +88,4 @@ echo "build finished"
 ls -la "${DIST}" | head
 echo
 echo "pglite.wasi:            ${DIST}/pglite.wasi"
-echo "pglite-wasi.tar.xz:     ${DIST}/pglite-wasi.tar.xz"
+echo "pglite-wasi.tar.xz:     ${DIST}/pglite-wasi.tar.xz (pgvector ${PGVECTOR_VERSION}, pg_trgm)"

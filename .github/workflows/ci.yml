@@ -66,6 +66,7 @@ jobs:
           poetry run pytest examples/fastapi-async-sqlalchemy -q
           poetry run pytest examples/asyncpg -q
           poetry run pytest examples/alembic -q
+          poetry run pytest examples/pgvector -q
           poetry run pytest examples/django -q
 
   wheel:
