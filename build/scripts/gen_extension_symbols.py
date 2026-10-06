@@ -11,6 +11,11 @@ A ``CREATE FUNCTION`` may provide an explicit C symbol as the second argument
 of ``AS 'MODULE_PATHNAME', 'symbol'``; PostgreSQL calls ``dlsym`` with that
 symbol, not with the SQL name. Those aliases must be registered instead.
 
+Functions not backed by the extension shared library are skipped: LANGUAGE
+SQL functions and LANGUAGE internal functions such as ``citextin AS
+'textin'`` or ``btean13cmp AS 'btint8cmp'`` never call ``dlsym`` and have no
+symbol in the module.
+
 Usage: gen_extension_symbols.py OUTPUT_HEADER path/to/vector--0.8.0.sql \
            path/to/pg_trgm--1.3.sql path/to/pg_trgm--1.3--1.4.sql ...
 """
@@ -33,13 +38,12 @@ _SYMBOL_RE = re.compile(
 def symbols_from_sql(text: str) -> set[str]:
     symbols: set[str] = set()
     for match in _STATEMENT_RE.finditer(text):
-        sql_name = match.group(1)
         body = match.group(2)
         explicit = _SYMBOL_RE.search(body)
-        symbol = sql_name
-        if explicit and explicit.group(1):
-            symbol = explicit.group(1)
-        symbols.add(symbol)
+        if explicit is None:
+            # LANGUAGE SQL / LANGUAGE internal; no symbol in the module.
+            continue
+        symbols.add(explicit.group(1) or match.group(1))
     return symbols
 
 

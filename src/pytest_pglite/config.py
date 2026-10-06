@@ -84,6 +84,15 @@ class PGliteConfig(BaseSettings):
         gt=0,
         description="Seconds a connection waits for the shared backend.",
     )
+    rewrite_concurrent_index: bool = Field(
+        default=True,
+        description=(
+            "Rewrite CREATE/DROP INDEX CONCURRENTLY and REINDEX CONCURRENTLY "
+            "to their plain forms. The single-backend build cannot run a "
+            "concurrent index build (upstream PGlite issue 901) and there are "
+            "no concurrent writers to worry about."
+        ),
+    )
     startup_timeout: float = Field(default=120.0, gt=0)
     holder_timeout: float | None = Field(
         default=None,

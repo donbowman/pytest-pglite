@@ -82,6 +82,9 @@ class WasmEngine:
         self._store: Any = None
         self._exports: Any = None
         self._started = False
+        #: Number of backend traps observed; a healthy WASM build with working
+        #: setjmp/longjmp stays at zero, because SQL errors do not abort it.
+        self.trap_count = 0
         self._last_input_length = 0
         self._wasmtime_engine: Engine | None = None
         self._module: Any = None

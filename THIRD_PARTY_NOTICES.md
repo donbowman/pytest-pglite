@@ -5,7 +5,7 @@ PGlite. The following components are included or depended upon.
 
 ## Redistributed artifacts
 
-### PGlite (`src/pytest_pglite/_wasm/pglite-17.5.20261006b.tar.xz`)
+### PGlite (`src/pytest_pglite/_wasm/pglite-17.5.20261006c.tar.xz`)
 
 The bundled `pglite.wasi` module and its prefix files are built by this
 project's pipeline from the

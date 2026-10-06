@@ -69,6 +69,8 @@ def test_gin_trigram_index(server: PGliteServer) -> None:
 def test_pg_trgm_settings(server: PGliteServer) -> None:
     """The _PG_init callback must have registered the GUCs."""
     with psycopg.connect(server.dsn) as conn:
+        # The library is loaded on first use, exactly like in PostgreSQL.
+        conn.execute("select similarity('a', 'a')").fetchone()
         value = conn.execute("show pg_trgm.similarity_threshold").fetchone()
         assert float(value[0]) == pytest.approx(0.3)
         conn.rollback()

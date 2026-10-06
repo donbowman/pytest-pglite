@@ -69,6 +69,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Keep the temporary database directory after the session.",
     )
     group.addoption(
+        "--pglite-no-concurrent-index-rewrite",
+        action="store_true",
+        default=None,
+        help=(
+            "Keep CONCURRENTLY in CREATE/DROP INDEX and REINDEX statements. "
+            "The single-backend build aborts with 'tuple concurrently updated'."
+        ),
+    )
+    group.addoption(
         "--pglite-log-level",
         action="store",
         default=None,
@@ -109,6 +118,8 @@ def _config_from_options(config: pytest.Config) -> PGliteConfig:
     keep_tmp = config.getoption("pglite_keep_tmp")
     if keep_tmp is not None:
         values["keep_tmp"] = bool(keep_tmp)
+    if config.getoption("pglite_no_concurrent_index_rewrite"):
+        values["rewrite_concurrent_index"] = False
     log_level = config.getoption("pglite_log_level")
     if log_level is not None:
         values["log_level"] = log_level
@@ -171,6 +182,9 @@ def pglite_url(pglite_server: PGliteServer) -> str:
 # helpers
 # ----------------------------------------------------------------------
 def _reset_schema_sync(connection: Any) -> None:
+    # A test may leave an aborted transaction behind; SQL errors no longer
+    # reset the session for us.
+    connection.rollback()
     with connection.cursor() as cursor:
         for statement in _RESET_STATEMENTS:
             cursor.execute(statement)
@@ -178,6 +192,7 @@ def _reset_schema_sync(connection: Any) -> None:
 
 
 async def _reset_schema_async(connection: Any) -> None:
+    await connection.rollback()
     async with connection.cursor() as cursor:
         for statement in _RESET_STATEMENTS:
             await cursor.execute(statement)

@@ -29,6 +29,7 @@ from ..protocol import (
     parse_parse,
     parse_query,
 )
+from .rewrite import rewrite_concurrent_index
 
 _COPY_FROM_STDIN_RE = re.compile(rb"(?is)\bcopy\b[^;]*\bfrom\s+stdin\b")
 
@@ -62,6 +63,7 @@ class ConnState:
     portal_counter: int = 0
     txn_status: str = "I"
     pipeline_open: bool = False
+    rewrite_concurrent_index: bool = True
 
     def new_statement_name(self) -> bytes:
         self.statement_counter += 1
@@ -111,6 +113,8 @@ def rewrite_frontend(state: ConnState, mtype: bytes, payload: bytes) -> bytes:
         state.pipeline_open = True
     if mtype == FE_PARSE:
         name, query, rest = parse_parse(payload)
+        if state.rewrite_concurrent_index:
+            query = rewrite_concurrent_index(query)
         backend_name = state.new_statement_name()
         if name:
             state.statements[name] = backend_name
@@ -165,6 +169,15 @@ def rewrite_frontend(state: ConnState, mtype: bytes, payload: bytes) -> bytes:
     if mtype == FE_QUERY:
         # Extended-protocol state does not survive a simple query; keep the
         # unnamed statement mapping, exactly like PostgreSQL does not.
+        if state.rewrite_concurrent_index:
+            try:
+                sql = parse_query(payload)
+            except Exception:  # noqa: BLE001 - let the backend reject it
+                sql = b""
+            if sql:
+                rewritten = rewrite_concurrent_index(sql)
+                if rewritten != sql:
+                    return build_message(FE_QUERY, encode_cstring(rewritten))
         return build_message(mtype, payload)
     return build_message(mtype, payload)
 

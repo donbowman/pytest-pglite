@@ -1,11 +1,262 @@
+diff --git a/patches-REL_17_5_WASM/postgresql-pglite/src-backend-utils-error-elog.c.diff b/patches-REL_17_5_WASM/postgresql-pglite/src-backend-utils-error-elog.c.diff
+index 103745d..ff1ac1f 100644
+--- a/patches-REL_17_5_WASM/postgresql-pglite/src-backend-utils-error-elog.c.diff
++++ b/patches-REL_17_5_WASM/postgresql-pglite/src-backend-utils-error-elog.c.diff
+@@ -30,7 +30,7 @@
+  		 */
+  
+  		recursion_depth--;
+-+#if defined(__wasi__)
+++#if defined(__wasi__) && !defined(PGLITE_ENABLE_SJLJ)
+ +        fprintf(stderr, "# 547: PG_RE_THROW(ERROR : %d) ignored\r\n", recursion_depth);
+ +        abort();
+ +#else
+diff --git a/patches-REL_17_5_WASM/postgresql-wasi/src-include-port-wasi.h.diff b/patches-REL_17_5_WASM/postgresql-wasi/src-include-port-wasi.h.diff
+index e959f33..c1317bf 100644
+--- a/patches-REL_17_5_WASM/postgresql-wasi/src-include-port-wasi.h.diff
++++ b/patches-REL_17_5_WASM/postgresql-wasi/src-include-port-wasi.h.diff
+@@ -1,16 +1,24 @@
+ --- REL_17_5_WASM/src/include/port/wasi.h
+ +++ REL_17_5_WASM-pglite/src/include/port/wasi.h
+-@@ -1,17 +1,229 @@
++@@ -1,17 +1,250 @@
+ -/* src/include/port/{wasi/emscripten}.h */
+-+#pragma once
+- 
++-
+ -#ifndef I_WASM
+ -#define I_WASM
+-+#ifndef I_WASI
+-+#define I_WASI
+- 
++-
+ -#if !defined(__cplusplus)
+ -#include <sdk_port.h>
++-#endif
+++#pragma once
+++
+++#ifndef I_WASI
+++#define I_WASI
+++#if defined(PGLITE_ENABLE_SJLJ)
+++/* Use the plain setjmp/longjmp that the SJLJ pass rewrites. */
+++#define sigsetjmp(env, savesigs) setjmp(env)
+++#define siglongjmp longjmp
+++#endif
+++
+ +#undef HAVE_PTHREAD
+ +
+ +#if defined(HAVE_SETSID)
+@@ -19,8 +27,8 @@
+ +
+ +#if defined(HAVE_GETRLIMIT)
+ +#undef HAVE_GETRLIMIT
+- #endif
+- 
+++#endif
+++
+ +
+ +#define PLATFORM_DEFAULT_SYNC_METHOD    SYNC_METHOD_FDATASYNC
+ +
+@@ -32,27 +40,32 @@
+ +#define emscripten_force_exit(...)
+ +#define EM_JS(...)
+ +
+-+
++ 
+  #include "/tmp/pglite/include/wasm_common.h"
+  
+  
+ -#define BOOT_END_MARK "build indices"
+ -#define FD_BUFFER_MAX 16384
++-
++-
++-#endif // I_WASM
+ +#define system(command) system_wasi(command)
+ +extern int system_wasi(const char *command);
+ +
+ +static pid_t
+-+fork(void) {
+++sdk_fork(void) {
+ +    puts("# 34:" __FILE__ ": fork -1");
+ +    return -1;
+ +}
+++#define fork sdk_fork
+ +
+ +static int
+-+pipe(int fd[2]) {
+++sdk_pipe(int fd[2]) {
+ +    puts("# 40: pipe");
+ +    abort();
+ +    return -1;
+ +}
+++#define pipe sdk_pipe
+ +
+ +// ============= signal ==============
+ +
+@@ -88,9 +101,10 @@
+ +
+ +#include <unistd.h> // for uid_t, pid_t
+ +static uid_t
+-+getuid(void) {
+++sdk_getuid(void) {
+ +    return 1000;
+ +}
+++#define getuid sdk_getuid
+ +
+ +
+ +// WIP: semaphores
+@@ -98,34 +112,39 @@
+ +#include <sys/sem.h>
+ +
+ +static int
+-+semctl(int semid, int semnum, int cmd, ...) {
+++sdk_semctl(int semid, int semnum, int cmd, ...) {
+ +    return 0; // -1;
+ +}
+++#define semctl sdk_semctl
+ +
+ +static int
+-+semget(key_t key, int nsems, int semflg) {
+++sdk_semget(key_t key, int nsems, int semflg) {
+ +#if 0 // PGDEBUG
+ +    printf("# 120: semget(key_t key = %d, int nsems=%d, int semflg=%d)\n", key, nsems, semflg);
+ +#endif
+ +    return 1;
+ +}
+++#define semget sdk_semget
+ +
+ +static int
+-+semop(int semid, struct sembuf *sops, size_t nsops) {
+++sdk_semop(int semid, struct sembuf *sops, size_t nsops) {
+ +    return 0;  // -1;
+ +}
+++#define semop sdk_semop
+ +
+ +static int
+-+dup(int fd) {
+++sdk_dup(int fd) {
+ +    puts("# 132: dup");
+ +    return fd;
+ +}
+++#define dup sdk_dup
+ +
+ +static int
+-+dup2(int old, int new) {
+++sdk_dup2(int old, int new) {
+ +    puts("# 138:" __FILE__ ": dup2");
+ +    return -1;
+ +}
+++#define dup2 sdk_dup2
+ +
+ +
+ +// <sys/resource.h>
+@@ -141,16 +160,18 @@
+ +};
+ +
+ +static int
+-+getrlimit(int resource, struct rlimit *rlim) {
+++sdk_getrlimit(int resource, struct rlimit *rlim) {
+ +    return -1;
+ +}
+++#define getrlimit sdk_getrlimit
+ +
+ +/*
+ +
+ +static int
+-+getrusage(int who, struct rusage *usage) {
+++sdk_getrusage(int who, struct rusage *usage) {
+ +    return -1;
+ +}
+++#define getrusage sdk_getrusage
+ +*/
+ +
+ +// STUBS
+@@ -188,7 +209,7 @@
+ +extern int shm_unlink(const char *name);
+ +#else
+ +static int
+-+shm_open(const char *name, int oflag, mode_t mode) {
+++sdk_shm_open(const char *name, int oflag, mode_t mode) {
+ +    char tmpnam[128];
+ +    int fd;
+ +    snprintf(tmpnam, 128, "/tmp%s", name);
+@@ -196,14 +217,16 @@
+ +    fprintf(stderr, "# 186: shm_open(%s) => %d\n", tmpnam, fd);
+ +    return fd;
+ +}
+++#define shm_open sdk_shm_open
+ +
+ +static int
+-+shm_unlink(const char *name) {
+++sdk_shm_unlink(const char *name) {
+ +    char tmpnam[128];
+ +    snprintf(tmpnam, 128, "/tmp%s", name);
+ +    fprintf(stderr, "# 194: shm_unlink(%s) STUB\n", tmpnam);
+ +    return remove(tmpnam); // -1
+ +}
+++#define shm_unlink sdk_shm_unlink
+ +
+ +#endif
+ +
+@@ -211,30 +234,33 @@
+ +// time.h
+ +
+ +static void
+-+tzset(void) {
+++sdk_tzset(void) {
+ +    puts("# 205: tzset(void) STUB");
+ +}
+++#define tzset sdk_tzset
+ +
+ +#if defined(PG_INITDB) || defined(FE_UTILS_PRINT) || defined(PG_DUMP_PARALLEL)
+ +static void
+-+__SIG_IGN(int param) {
+++sdk___SIG_IGN(int param) {
+ +}
+++#define __SIG_IGN sdk___SIG_IGN
+ +#endif
+ +
+ +
+ +static int
+-+listen(int sockfd, int backlog) {
+++sdk_listen(int sockfd, int backlog) {
+ +    return 0;
+ +}
+++#define listen sdk_listen
+ +
+ +static struct group *_Nullable
+-+getgrnam(const char *_Nullable name) {
+++sdk_getgrnam(const char *_Nullable name) {
+ +    return NULL;
+ +}
+++#define getgrnam sdk_getgrnam
+ +
+ +#endif // __wasi__p2
+ +
+ +#endif // I_WASI
+- 
+- 
+--#endif // I_WASM
+++
+++
 diff --git a/pglite-REL_17_4_WASM/build.sh b/pglite-REL_17_4_WASM/build.sh
-index b5f9907..2b89142 100755
+index b5f9907..b2e3dee 100755
 --- a/pglite-REL_17_4_WASM/build.sh
 +++ b/pglite-REL_17_4_WASM/build.sh
-@@ -89,6 +89,41 @@ ________________________________________________________
+@@ -81,7 +81,7 @@ ________________________________________________________
+ "
+ 
+ 
+-    if ${CC} -ferror-limit=1 ${CC_PGLITE} \
++    if ${CC} -ferror-limit=50 ${COPTS} ${CC_PGLITE} \
+      ${PGINC} \
+      -DPOSTGRES_C=\"../postgresql/src/backend/tcop/postgres.c\" \
+      -DPQEXPBUFFER_H=\"../postgresql/src/interfaces/libpq/pqexpbuffer.h\" \
+@@ -89,19 +89,79 @@ ________________________________________________________
       -o ${BUILD_PATH}/pglite.o -c ${WORKSPACE}/pglite-wasm/pg_main.c \
       -Wno-incompatible-pointer-types-discards-qualifiers
      then
+-        if ${CC} -fpic -ferror-limit=1 ${CC_PGLITE} ${PGINC} \
 +        VECTOR_OBJS=""
 +        VECTOR_SRC="${PG_EXTRA}/vector"
 +        [ -d "${VECTOR_SRC}/src" ] || VECTOR_SRC="${WORKSPACE}/extra/vector"
@@ -15,7 +266,7 @@ index b5f9907..2b89142 100755
 +            for vector_c in "${VECTOR_SRC}"/src/*.c
 +            do
 +                vector_o="${BUILD_PATH}/vector/$(basename "${vector_c}" .c).o"
-+                if ! ${CC} -O2 -fPIC -D_PG_init=pglite_vector_PG_init ${CC_PGLITE} ${PGINC} -c "${vector_c}" -o "${vector_o}"
++                if ! ${CC} ${COPTS} -fPIC -D_PG_init=pglite_vector_PG_init ${CC_PGLITE} ${PGINC} -c "${vector_c}" -o "${vector_o}"
 +                then
 +                    echo "pgvector compilation failed: ${vector_c}"
 +                    exit 22
@@ -24,35 +275,84 @@ index b5f9907..2b89142 100755
 +            done
 +        fi
 +
-+        PG_TRGM_OBJS=""
-+        PG_TRGM_SRC="${PGSRC}/contrib/pg_trgm"
-+        if [ -d "${PG_TRGM_SRC}" ]
++        CONTRIB_OBJS=""
++        CONTRIB_LIST="${WORKSPACE}/extra/static-extensions.list"
++        if [ ! -f "${CONTRIB_LIST}" ]
 +        then
-+            mkdir -p "${BUILD_PATH}/pg_trgm"
-+            for trgm_c in "${PG_TRGM_SRC}"/*.c
-+            do
-+                trgm_o="${BUILD_PATH}/pg_trgm/$(basename "${trgm_c}" .c).o"
-+                if ! ${CC} -O2 -fPIC -D_PG_init=pglite_pg_trgm_PG_init -DPg_magic_func=pglite_pg_trgm_Pg_magic_func ${CC_PGLITE} ${PGINC} -c "${trgm_c}" -o "${trgm_o}"
-+                then
-+                    echo "pg_trgm compilation failed: ${trgm_c}"
-+                    exit 23
-+                fi
-+                PG_TRGM_OBJS="${PG_TRGM_OBJS} ${trgm_o}"
-+            done
++            echo "static extension list not found: ${CONTRIB_LIST}"
++            exit 24
 +        fi
++        for contrib_mod in $(grep -v '^#' "${CONTRIB_LIST}" | tr -d '\r')
++        do
++            [ -n "${contrib_mod}" ] || continue
++            contrib_root="${PGSRC:-${WORKSPACE}/postgresql-${PG_BRANCH}}"
++            contrib_src="${contrib_root}/contrib/${contrib_mod}"
++            if [ ! -d "${contrib_src}" ]
++            then
++                echo "contrib module not found: ${contrib_mod}"
++                exit 25
++            fi
++            mkdir -p "${BUILD_PATH}/${contrib_mod}"
++            for contrib_c in "${contrib_src}"/*.c
++            do
++                [ -f "${contrib_c}" ] || continue
++                case "${contrib_mod}/$(basename "${contrib_c}")" in
++                    # built only with OpenSSL, which the WASI build disables
++                    pgcrypto/openssl.c|pgcrypto/pgp-mpi-openssl.c) continue ;;
++                esac
++                contrib_o="${BUILD_PATH}/${contrib_mod}/$(basename "${contrib_c}" .c).o"
++                if ! ${CC} ${COPTS} -fPIC \
++                    -DPg_magic_func=pglite_${contrib_mod}_Pg_magic_func \
++                    -D_PG_init=pglite_${contrib_mod}_PG_init \
++                    ${CC_PGLITE} ${PGINC} -c "${contrib_c}" -o "${contrib_o}"
++                then
++                    echo "static extension compilation failed: ${contrib_c}"
++                    exit 26
++                fi
++                CONTRIB_OBJS="${CONTRIB_OBJS} ${contrib_o}"
++            done
++        done
 +
-         if ${CC} -fpic -ferror-limit=1 ${CC_PGLITE} ${PGINC} \
++        echo "libpglite link: $(echo ${CONTRIB_OBJS} | wc -w) contrib objects"
++
++        if ${CC} -fpic -ferror-limit=50 ${CC_PGLITE} ${PGINC} \
           -o ${BUILD_PATH}/sdk_port-wasi.o \
           -c wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c \
-@@ -98,6 +133,8 @@ ________________________________________________________
+          -Wno-incompatible-pointer-types
+         then
+-            COPTS="$LOPTS" ${CC} ${CC_PGLITE} -ferror-limit=1 -Wl,--global-base=${GLOBAL_BASE_B} -o ${PG_DIST}/pglite.wasi \
++            COPTS="$LOPTS" ${CC} ${CC_PGLITE} -ferror-limit=50 -Wl,--global-base=${GLOBAL_BASE_B} -o ${PG_DIST}/pglite.wasi \
               -nostartfiles ${PGINC} ${BUILD_PATH}/pglite.o \
               ${BUILD_PATH}/sdk_port-wasi.o \
               $LINKER $LIBPGCORE \
 +             $VECTOR_OBJS \
-+             $PG_TRGM_OBJS \
++             $CONTRIB_OBJS \
               $LINK_ICU \
               ${PG_BUILD}/${BUILD}/src/backend/snowball/libdict_snowball.a \
               ${PG_BUILD}/${BUILD}/src/pl/plpgsql/src/libplpgsql.a \
+-             -lxml2 -lz
++             -lsetjmp
+         else
+             echo "compilation of libpglite ${BUILD} support failed"
+         fi
+@@ -260,7 +320,7 @@ ________________________________________________________
+         export EMCC_FORCE_STDLIBS=1
+ 
+         if COPTS="-O2 -g3 --no-wasm-opt" ${CC} ${CC_PGLITE} ${PGINC} -o ${PGL_DIST_JS}/pglite-js.js \
+-         -sGLOBAL_BASE=${CMA_MB}MB -ferror-limit=1  \
++         -sGLOBAL_BASE=${CMA_MB}MB -ferror-limit=50  \
+          -sFORCE_FILESYSTEM=1 $EMCC_NODE -sMAIN_MODULE=1 -sEXPORT_ALL -sASSERTIONS=0 \
+              -sALLOW_TABLE_GROWTH -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
+              -sEXPORTED_RUNTIME_METHODS=${EXPORTED_RUNTIME_METHODS} \
+@@ -305,7 +365,7 @@ ________________________________________________________
+ #
+         if COPTS="$LOPTS" ${CC} ${CC_PGLITE} -o ${PGL_DIST_WEB}/pglite.html --shell-file ${WORKSPACE}/pglite-${PG_BRANCH}/repl.html \
+          $PGPRELOAD \
+-         -sGLOBAL_BASE=${CMA_MB}MB -ferror-limit=1 \
++         -sGLOBAL_BASE=${CMA_MB}MB -ferror-limit=50 \
+          -sFORCE_FILESYSTEM=1 -sNO_EXIT_RUNTIME=1 -sENVIRONMENT=node,web \
+          $LINKER \
+          -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=Module \
 diff --git a/pglite-REL_17_4_WASM/interactive_one.c b/pglite-REL_17_4_WASM/interactive_one.c
 index fc35909..509cb0a 100644
 --- a/pglite-REL_17_4_WASM/interactive_one.c
@@ -76,8 +376,76 @@ index fc35909..509cb0a 100644
      PortalErrorCleanup();
      if (MyReplicationSlot != NULL)
          ReplicationSlotRelease();
+diff --git a/pglite-REL_17_4_WASM/pg_main.c b/pglite-REL_17_4_WASM/pg_main.c
+index 65e5d7a..b5a868c 100644
+--- a/pglite-REL_17_4_WASM/pg_main.c
++++ b/pglite-REL_17_4_WASM/pg_main.c
+@@ -484,7 +484,8 @@ __attribute__ ((export_name("pgl_backend")))
+ #else
+         remove(IDB_PIPE_BOOT);
+ #endif
+-        stdin = fdopen(saved_stdin, "r");
++        /* wasi-libc 26 and newer declare stdin as FILE *const */
++        *(FILE **)(void *)(uintptr_t)&stdin = fdopen(saved_stdin, "r");
+ 
+         PDEBUG("# 479: initdb faking shutdown to complete WAL/OID states");
+         pg_proc_exit(66);
+diff --git a/pglite-REL_17_4_WASM/pgl_sjlj.c b/pglite-REL_17_4_WASM/pgl_sjlj.c
+index 6c05daf..9b090ec 100644
+--- a/pglite-REL_17_4_WASM/pgl_sjlj.c
++++ b/pglite-REL_17_4_WASM/pgl_sjlj.c
+@@ -1,4 +1,4 @@
+-#if defined(__wasi__)
++#if defined(__wasi__) && !defined(PGLITE_ENABLE_SJLJ)
+     PDEBUG("# 2:" __FILE__ ": sjlj exception handler off");
+ #else
+ 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
+diff --git a/portable/portable.sh b/portable/portable.sh
+index 5e8bd2c..06e4a80 100755
+--- a/portable/portable.sh
++++ b/portable/portable.sh
+@@ -490,11 +490,35 @@ Fatal: failed to apply patch : $one
+ 
+             # unpack wasi sdk  (common)
+             tar xf $PORTABLE/wasi-sdk-25.tar.xz
+-            # unpack wasi sdk ( binary )
+-            tar xf $PORTABLE/wasi-sdk-25.0-$(arch)-linux.tar.xz
++            # unpack the wasi-sdk release requested by the orchestrator,
++            # otherwise fall back to the bundled wasi-sdk-25.
++            WASI_SDK_VERSION=${WASI_SDK_VERSION:-25.0}
++            if [ -n "${WASI_SDK_TARBALL:-}" ] && [ -f "${WASI_SDK_TARBALL}" ]; then
++                tar xf "${WASI_SDK_TARBALL}"
++                mv tmp/sdk/wasisdk/wasi-sdk-${WASI_SDK_VERSION}-*-linux/* tmp/sdk/wasisdk/upstream/
++                echo "${WASI_SDK_VERSION}" > tmp/sdk/wasisdk/.pytest-pglite-sdk-version
++            else
++                tar xf $PORTABLE/wasi-sdk-25.0-$(arch)-linux.tar.xz
++                mv tmp/sdk/wasisdk/wasi-sdk-25.0-$(arch)-linux/* tmp/sdk/wasisdk/upstream/
++            fi
++
++            # clang 23 needs a glibc libtinfo that the container lacks; the
++            # orchestrator provides one when it configures a newer wasi-sdk.
++            if [ -n "${WASI_LIBTINFO:-}" ] && [ -f "${WASI_LIBTINFO}" ]; then
++                mkdir -p tmp/sdk/wasisdk/upstream/lib
++                cp -f "${WASI_LIBTINFO}" tmp/sdk/wasisdk/upstream/lib/libtinfo.so.6
++            fi
+ 
+-            # install arch binaries to sdk wasi sdk root
+-            mv tmp/sdk/wasisdk/wasi-sdk-25.0-$(arch)-linux/* tmp/sdk/wasisdk/upstream/
++            # fixed hotfix header from the orchestrator (wasi types and the
++            # sjlj stubs are handled by build/extra/hotfix-patch.h).
++            if [ -n "${WASI_HOTFIX_PATCH:-}" ] && [ -f "${WASI_HOTFIX_PATCH}" ]; then
++                cp -f "${WASI_HOTFIX_PATCH}" tmp/sdk/wasisdk/hotfix/patch.h
++            fi
++
++            # header fixes the official SDK overwrites (see build-wasi.sh)
++            if [ -n "${WASI_SYSFIX_DIR:-}" ] && [ -d "${WASI_SYSFIX_DIR}" ]; then
++                cp -R "${WASI_SYSFIX_DIR}/." tmp/sdk/wasisdk/upstream/share/wasi-sysroot/include/wasm32-wasip1/
++            fi
+ 
+             if [ -f $CONTAINER_PATH/usr/bin/python3 ]
+             then
 diff --git a/wasm-build.sh b/wasm-build.sh
-index de209db..519f2c5 100755
+index de209db..62c752b 100755
 --- a/wasm-build.sh
 +++ b/wasm-build.sh
 @@ -70,8 +70,10 @@ then
@@ -86,13 +454,22 @@ index de209db..519f2c5 100755
      else
 -        export COPTS=${COPTS:-"-Oz -g0"}
 -        export LOPTS=${LOPTS:-"-Oz -g0"}
-+        # Optimize the core for speed, not size.  The test database is
-+        # CPU-bound and -Oz roughly doubles SQL execution time versus -O2.
-+        export COPTS=${COPTS:-"-O2 -g0"}
-+        export LOPTS=${LOPTS:-"-O2 -g0"}
++        # Optimize for speed, not size.  The test database is CPU-bound and
++        # upstream's -Oz roughly doubles SQL execution time versus -O2.
++        export COPTS=${COPTS:-"-O3 -g0"}
++        export LOPTS=${LOPTS:-"-O3 -g0"}
      fi
  else
      BUILD=emscripten
+@@ -218,7 +220,7 @@ export CC_PGLITE="-DPYDK=1 -DPG_PREFIX=${PGROOT} -I${PGROOT}/include -DCMA_MB=${
+ 
+ if $WASI
+ then
+-    export WASI_CFLAGS="-D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_SIGNAL --target=wasm32-wasip1 -D__wasilibc_use_wasip1" # -mllvm -wasm-enable-sjlj"
++    export WASI_CFLAGS="-D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_SIGNAL --target=wasm32-wasip1 -D__wasilibc_use_wasip1 -mllvm -wasm-enable-sjlj -DPGLITE_ENABLE_SJLJ"
+     export CC_PGLITE="$WASI_CFLAGS $CC_PGLITE"
+ fi
+ 
 diff --git a/wasm-build/build-ext.sh b/wasm-build/build-ext.sh
 index c8aa99d..82d6496 100755
 --- a/wasm-build/build-ext.sh
@@ -124,7 +501,7 @@ index c8aa99d..82d6496 100755
  fi
  
 diff --git a/wasm-build/build-pgcore.sh b/wasm-build/build-pgcore.sh
-index 702f481..2051107 100755
+index 702f481..60d210c 100755
 --- a/wasm-build/build-pgcore.sh
 +++ b/wasm-build/build-pgcore.sh
 @@ -94,7 +94,7 @@ else
@@ -136,7 +513,23 @@ index 702f481..2051107 100755
  
      # common to all wasm flavour
      cp ${PGSRC}/src/include/port/wasm_common.h ${PGROOT}/include/wasm_common.h
-@@ -294,7 +294,7 @@ END
+@@ -108,11 +108,13 @@ else
+     if ${WASI}
+     then
+          echo "WASI BUILD: turning off xml/xslt support"
+-        XML2=""
++        # wasi-sdk does not ship zlib; PostgreSQL's configure defaults to
++        # --with-zlib and fails hard when the library is missing.
++        XML2="--without-zlib"
+         UUID=""
+ 
+  # -lwasi-emulated-signal -D_WASI_EMULATED_SIGNAL -lwasi-emulated-getpid -D_WASI_EMULATED_GETPID
+-        WASM_LDFLAGS="-lwasi-emulated-mman -lwasi-emulated-pthread -lwasi-emulated-process-clocks"
++        WASM_LDFLAGS="-lwasi-emulated-mman -lwasi-emulated-process-clocks -lsetjmp"
+         WASM_CFLAGS="-I${WASISDK}/hotfix -DSDK_PORT=${PREFIX}/include/sdk_port-wasi.c ${COMMON_CFLAGS} -D_WASI_EMULATED_PTHREAD -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_PROCESS_CLOCKS"
+         export MAIN_MODULE=""
+ 
+@@ -294,7 +296,7 @@ END
      then
          NCPU=1
      else
@@ -146,7 +539,7 @@ index 702f481..2051107 100755
  
      # Get rid of some build stages for now
 diff --git a/wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c b/wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c
-index 44dac9e..80f94f3 100644
+index 44dac9e..b614720 100644
 --- a/wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c
 +++ b/wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c
 @@ -5,6 +5,12 @@
@@ -180,13 +573,17 @@ index 44dac9e..80f94f3 100644
  extern void pg_finfo_dsnowball_init(void);
  extern void pg_finfo_dsnowball_lexize(void);
  
-@@ -126,24 +134,41 @@ extern void plpgsql_validator(void);
+@@ -126,24 +134,55 @@ extern void plpgsql_validator(void);
  
  extern void _PG_init(void);
  
 +extern void pglite_vector_PG_init(void);
 +
 +extern void pglite_pg_trgm_PG_init(void);
++
++extern void pglite_bloom_PG_init(void);
++
++extern void pglite_isn_PG_init(void);
 +
  
  void *
@@ -217,6 +614,16 @@ index 44dac9e..80f94f3 100644
 +        pglite_pg_trgm_PG_init();
 +    }
 +
++    if ( ends_with(filename,"/bloom.so") ){
++        puts(" ========= CALLING bloom _PG_init =========");
++        pglite_bloom_PG_init();
++    }
++
++    if ( ends_with(filename,"/isn.so") ){
++        puts(" ========= CALLING isn _PG_init =========");
++        pglite_isn_PG_init();
++    }
++
 +    if (dltab_index >= DLTAB_MAX)
 +        return NULL;
      tab = dict_new();
@@ -227,7 +634,7 @@ index 44dac9e..80f94f3 100644
  
      return (void *)dltab_index;
  }
-@@ -164,6 +189,9 @@ dlsym(void *__restrict handle, const char *__restrict symbol) {
+@@ -164,6 +203,9 @@ dlsym(void *__restrict handle, const char *__restrict symbol) {
          //sym = &dsnowball_init;
          return  &dsnowball_init;
  
@@ -237,7 +644,7 @@ index 44dac9e..80f94f3 100644
      if ( !strcmp(symbol, "pg_finfo_dsnowball_init") )
          return  &pg_finfo_dsnowball_init;
  
-@@ -190,6 +218,12 @@ dlsym(void *__restrict handle, const char *__restrict symbol) {
+@@ -190,6 +232,12 @@ dlsym(void *__restrict handle, const char *__restrict symbol) {
          goto report;
      }
  
@@ -250,37 +657,195 @@ index 44dac9e..80f94f3 100644
  report:;
      fprintf(stderr, "void *dlsym(void *handle = %p, const char *symbol = %s) => %p\n", handle, symbol, sym);
      return sym;
+diff --git a/wasm-build/sdk_port.h b/wasm-build/sdk_port.h
+index 2ceab50..bc95bc1 100644
+--- a/wasm-build/sdk_port.h
++++ b/wasm-build/sdk_port.h
+@@ -32,10 +32,11 @@
+ 
+ 
+ static pid_t
+-fork(void) {
++sdk_fork(void) {
+     puts("# 31: fork -1");
+     return -1;
+ }
++#define fork sdk_fork
+ 
+ // ======== signal ========================
+ #define SA_RESTART 4
+@@ -81,26 +82,30 @@ extern unsigned int alarm(unsigned int seconds);
+ 
+ #include <unistd.h>
+ static uid_t
+-getuid(void) {
++sdk_getuid(void) {
+     return 1000;
+ }
++#define getuid sdk_getuid
+ 
+ static int
+-dup(int fd) {
++sdk_dup(int fd) {
+     puts("# 128: dup");
+     return fd;
+ }
++#define dup sdk_dup
+ static int
+-dup2(int old, int new) {
++sdk_dup2(int old, int new) {
+     puts("# 140: dup2");
+     return -1;
+ }
++#define dup2 sdk_dup2
+ static int
+-pipe(int fd[2]) {
++sdk_pipe(int fd[2]) {
+     puts("# 145: pipe");
+     abort();
+     return -1;
+ }
++#define pipe sdk_pipe
+ 
+ #include <sys/resource.h>
+ #define RLIMIT_NOFILE 7
+@@ -112,16 +117,18 @@ struct rlimit {
+     unsigned long   rlim_max;
+ };
+ static int
+-getrlimit(int resource, struct rlimit *rlim) {
++sdk_getrlimit(int resource, struct rlimit *rlim) {
+     return -1;
+ }
++#define getrlimit sdk_getrlimit
+ 
+ 
+ static const char *gai_strerror_msg = "# 165: gai_strerror_msg";
+ static const char *
+-gai_strerror(int errcode) {
++sdk_gai_strerror(int errcode) {
+     return gai_strerror_msg;
+ }
++#define gai_strerror sdk_gai_strerror
+ 
+ 
+ 
+@@ -131,22 +138,25 @@ gai_strerror(int errcode) {
+ #include <sys/sem.h>
+ 
+ static int
+-semctl(int semid, int semnum, int cmd, ...) {
++sdk_semctl(int semid, int semnum, int cmd, ...) {
+     return 0; // -1;
+ }
++#define semctl sdk_semctl
+ 
+ static int
+-semget(key_t key, int nsems, int semflg) {
++sdk_semget(key_t key, int nsems, int semflg) {
+ #if 0 // PGDEBUG
+     printf("# 213: semget(key_t key = %d, int nsems=%d, int semflg=%d)\n", key, nsems, semflg);
+ #endif
+     return 1;
+ }
++#define semget sdk_semget
+ 
+ static int
+-semop(int semid, struct sembuf *sops, size_t nsops) {
++sdk_semop(int semid, struct sembuf *sops, size_t nsops) {
+     return 0;  // -1;
+ }
++#define semop sdk_semop
+ 
+ 
+ 
+@@ -156,7 +166,7 @@ extern int shm_open(const char *name, int oflag, mode_t mode);
+ extern int shm_unlink(const char *name);
+ #else
+ static int
+-shm_open(const char *name, int oflag, mode_t mode) {
++sdk_shm_open(const char *name, int oflag, mode_t mode) {
+     char tmpnam[128];
+     int fd;
+     snprintf(tmpnam, 128, "/tmp%s", name);
+@@ -164,14 +174,16 @@ shm_open(const char *name, int oflag, mode_t mode) {
+     fprintf(stderr, "# 212: shm_open(%s) => %d\n", tmpnam, fd);
+     return fd;
+ }
++#define shm_open sdk_shm_open
+ 
+ static int
+-shm_unlink(const char *name) {
++sdk_shm_unlink(const char *name) {
+     char tmpnam[128];
+     snprintf(tmpnam, 128, "/tmp%s", name);
+     fprintf(stderr, "# 220: shm_unlink(%s) STUB\n", tmpnam);
+     return remove(tmpnam); // -1
+ }
++#define shm_unlink sdk_shm_unlink
+ 
+ #endif
+ 
+@@ -185,14 +197,16 @@ extern int system_wasi(const char *command);
+ // time.h
+ 
+ static void
+-tzset(void) {
++sdk_tzset(void) {
+     puts("# 241: tzset(void) STUB");
+ }
++#define tzset sdk_tzset
+ 
+ #if defined(PG_INITDB) || defined(FE_UTILS_PRINT) || defined(PG_DUMP_PARALLEL)
+ static void
+-__SIG_IGN(int param) {
++sdk___SIG_IGN(int param) {
+ }
++#define __SIG_IGN sdk___SIG_IGN
+ #endif
+ 
+ 
+@@ -217,14 +231,16 @@ extern ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, void *
+ 
+ 
+ static int
+-listen(int sockfd, int backlog) {
++sdk_listen(int sockfd, int backlog) {
+     return 0;
+ }
++#define listen sdk_listen
+ 
+ static struct group *_Nullable
+-getgrnam(const char *_Nullable name) {
++sdk_getgrnam(const char *_Nullable name) {
+     return NULL;
+ }
++#define getgrnam sdk_getgrnam
+ 
+ 
+ static int
 diff --git a/wasmfs.txt b/wasmfs.txt
-index 3473edd..37574f8 100644
+index 3473edd..eab0dcb 100644
 --- a/wasmfs.txt
 +++ b/wasmfs.txt
-@@ -2,6 +2,8 @@
+@@ -1,14 +1,10 @@
+ /tmp/pglite/bin/initdb
  /tmp/pglite/bin/postgres
  /tmp/pglite/bin/pglite.wasi
- /tmp/pglite/lib/postgresql/dict_snowball.so
-+/tmp/pglite/lib/postgresql/vector.so
-+/tmp/pglite/lib/postgresql/pg_trgm.so
- /tmp/pglite/lib/postgresql/llvmjit.so
- /tmp/pglite/lib/postgresql/plpgsql.so
+-/tmp/pglite/lib/postgresql/dict_snowball.so
+-/tmp/pglite/lib/postgresql/llvmjit.so
+-/tmp/pglite/lib/postgresql/plpgsql.so
++/tmp/pglite/lib/postgresql
  /tmp/pglite/locale
-@@ -9,6 +11,16 @@
- /tmp/pglite/share/postgresql/extension/plpgsql--1.0.control
- /tmp/pglite/share/postgresql/extension/plpgsql--1.0.sql
- /tmp/pglite/share/postgresql/extension/plpgsql.control
-+/tmp/pglite/share/postgresql/extension/vector.control
-+/tmp/pglite/share/postgresql/extension/vector--0.8.0.sql
-+/tmp/pglite/share/postgresql/extension/pg_trgm.control
-+/tmp/pglite/share/postgresql/extension/pg_trgm--1.0--1.1.sql
-+/tmp/pglite/share/postgresql/extension/pg_trgm--1.1--1.2.sql
-+/tmp/pglite/share/postgresql/extension/pg_trgm--1.2--1.3.sql
-+/tmp/pglite/share/postgresql/extension/pg_trgm--1.3.sql
-+/tmp/pglite/share/postgresql/extension/pg_trgm--1.3--1.4.sql
-+/tmp/pglite/share/postgresql/extension/pg_trgm--1.4--1.5.sql
-+/tmp/pglite/share/postgresql/extension/pg_trgm--1.5--1.6.sql
+ /tmp/pglite/password
+-/tmp/pglite/share/postgresql/extension/plpgsql--1.0.control
+-/tmp/pglite/share/postgresql/extension/plpgsql--1.0.sql
+-/tmp/pglite/share/postgresql/extension/plpgsql.control
++/tmp/pglite/share/postgresql/extension
  /tmp/pglite/share/postgresql/information_schema.sql
  /tmp/pglite/share/postgresql/pg_hba.conf.sample
  /tmp/pglite/share/postgresql/pg_ident.conf.sample
-@@ -20,4 +32,5 @@
+@@ -20,4 +16,5 @@
  /tmp/pglite/share/postgresql/system_functions.sql
  /tmp/pglite/share/postgresql/system_views.sql
  /tmp/pglite/share/postgresql/timezonesets/Default

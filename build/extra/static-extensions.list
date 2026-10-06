@@ -1,0 +1,28 @@
+# PostgreSQL contrib modules statically linked into pglite.wasi.
+#
+# Each module's C sources are compiled by pglite-REL_17_4_WASM/build.sh, its
+# SQL and control files are installed by build/extra/extensions-wasi.sh, and
+# its SQL-visible functions are registered in the dlopen/dlsym shim through a
+# generated symbol table.  Keep this list to modules that build without
+# external libraries.
+#
+# pgcrypto is not listed because PostgreSQL only builds it when OpenSSL is
+# enabled, and wasi-sdk does not ship libcrypto.
+btree_gin
+btree_gist
+bloom
+citext
+cube
+dict_int
+earthdistance
+fuzzystrmatch
+hstore
+intarray
+isn
+ltree
+pg_trgm
+seg
+tablefunc
+tsm_system_rows
+tsm_system_time
+unaccent

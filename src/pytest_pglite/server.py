@@ -196,6 +196,17 @@ class PGliteServer:
         return self._wire.port
 
     @property
+    def trap_count(self) -> int:
+        """Backend traps observed so far.
+
+        The bundled module handles SQL errors with real setjmp/longjmp, so a
+        healthy build stays at zero; a positive value means an error aborted
+        the WebAssembly instance and the recovery path ran.
+        """
+        engine = self._engine
+        return engine.trap_count if engine is not None else 0
+
+    @property
     def dsn(self) -> str:
         """A libpq connection string."""
         user = quote(self.config.user, safe="")
