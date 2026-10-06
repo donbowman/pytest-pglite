@@ -5,7 +5,7 @@ PGlite. The following components are included or depended upon.
 
 ## Redistributed artifacts
 
-### PGlite (`src/pytest_pglite/_wasm/pglite-17.5.20261006.tar.xz`)
+### PGlite (`src/pytest_pglite/_wasm/pglite-17.5.20261006b.tar.xz`)
 
 The bundled `pglite.wasi` module and its prefix files are built by this
 project's pipeline from the
@@ -36,6 +36,9 @@ The PostgreSQL License text is reproduced at the end of this file.
   WITH LLVM-exception (toolchain, used to produce the bundled module).
 - [pgvector](https://github.com/pgvector/pgvector) - PostgreSQL License
   (compiled into the bundled module).
+- [pg_trgm](https://www.postgresql.org/docs/current/pgtrgm.html) - part of the
+  PostgreSQL contrib modules, PostgreSQL License (compiled into the bundled
+  module).
 - [PostgreSQL](https://www.postgresql.org/) - PostgreSQL License.
 
 ## PostgreSQL License
