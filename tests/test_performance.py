@@ -46,3 +46,32 @@ def test_template_cache_reuse() -> None:
     assert second_elapsed < max(
         5.0, first_elapsed * 3
     ), f"second start {second_elapsed:.2f}s vs first {first_elapsed:.2f}s"
+
+
+def test_extended_protocol_pipeline_is_coalesced() -> None:
+    """A parameterized query reaches the backend as one exchange, not five.
+
+    Extended-protocol clients send Parse/Bind/Describe/Execute/Sync back to
+    back; the proxy must feed them to the Wasmtime backend in one call or
+    every query pays a Wasmtime round trip per message.
+    """
+    import psycopg
+
+    with PGliteServer(PGliteConfig()) as server:
+        engine = server._engine
+        assert engine is not None
+        calls: list[bytes] = []
+        original = engine.exchange
+
+        def counting_exchange(payload: bytes) -> bytes:
+            calls.append(payload)
+            return original(payload)
+
+        engine.exchange = counting_exchange  # type: ignore[method-assign]
+        # autocommit avoids psycopg's separate BEGIN/ROLLBACK simple queries.
+        with psycopg.connect(server.dsn, autocommit=True) as connection:
+            calls.clear()
+            # Parameters force the extended query protocol.
+            row = connection.execute("select %s::int", (1,)).fetchone()
+            assert row == (1,)
+        assert len(calls) == 1, f"expected one coalesced exchange, got {len(calls)}"

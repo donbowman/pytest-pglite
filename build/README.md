@@ -1,37 +1,45 @@
 # Building the bundled pglite.wasi artifact
 
 `pytest-pglite` ships a prebuilt PostgreSQL 17.5 WebAssembly module with
-pgvector statically linked, under `src/pytest_pglite/_wasm/`. This directory
-contains everything needed to reproduce that artifact.
+pgvector and pg_trgm statically linked, under `src/pytest_pglite/_wasm/`. This
+directory contains everything needed to reproduce that artifact.
 
 ## What gets built
 
 The build starts from
 [electric-sql/pglite-build](https://github.com/electric-sql/pglite-build)
 (branch `portable`, pinned commit `c195113dbaf09488f8d5eeb2db91dacd123b74d0`)
-and applies `patches/0001-vector-static.patch`, which:
+and applies `patches/0001-static-extensions.patch`, which:
 
 1. `wasm-build/build-ext.sh` - in WASI mode, run `extra/*-wasi.sh` build steps
    instead of skipping all extensions.
-2. `extra/vector-wasi.sh` (added separately, not part of the patch) - install
-   `vector.control` and `vector--0.8.0.sql`, create the `vector.so` placeholder
-   that PostgreSQL stats before `dlopen`, and generate the dlsym table.
-3. `wasm-build/gen_vector_symbols.py` (added separately) - parse the extension
-   SQL and emit one table entry per C symbol, honouring
-   `AS 'MODULE_PATHNAME', 'symbol'` aliases.
+2. `extra/extensions-wasi.sh` (added separately, not part of the patch) -
+   install `vector.control` / `vector--0.8.0.sql` and the `pg_trgm.control`
+   plus `pg_trgm--*.sql` scripts, create the `vector.so` / `pg_trgm.so`
+   placeholders that PostgreSQL stats before `dlopen`, and generate the dlsym
+   table.
+3. `wasm-build/gen_extension_symbols.py` (added separately) - parse the
+   extension SQL and emit one table entry per C symbol, honouring
+   `AS 'MODULE_PATHNAME', 'symbol'` aliases, for every bundled extension.
 4. `wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c` - consult the generated
-   table from `dlsym`, call pgvector's `_PG_init` from `dlopen`, and fix the
-   upstream `dltab` bug (a one-element tentative array with an off-by-one that
-   corrupted memory on the second `dlopen`).
-5. `pglite-REL_17_4_WASM/build.sh` - compile pgvector's C sources with
-   `_PG_init` renamed to `pglite_vector_PG_init` (plpgsql defines `_PG_init`
-   too) and add the objects to the `pglite.wasi` link.
+   table from `dlsym`, call each extension's `_PG_init` from `dlopen`, and fix
+   the upstream `dltab` bug (a one-element tentative array with an off-by-one
+   that corrupted memory on the second `dlopen`).
+5. `pglite-REL_17_4_WASM/build.sh` - compile pgvector's and pg_trgm's C sources
+   (with `_PG_init` renamed to `pglite_vector_PG_init` /
+   `pglite_pg_trgm_PG_init`, and pg_trgm's `Pg_magic_func` renamed, because
+   other objects define those symbols) and add them to the `pglite.wasi`
+   link.
 6. `pglite-REL_17_4_WASM/interactive_one.c` - clear `ActivePortal` during
    trap recovery. Without `sigsetjmp` the active portal is never unwound and
    `PortalErrorCleanup()` aborts with "cannot drop active portal", wedging the
    session after a simple-query error.
-7. `wasm-build/build-pgcore.sh` - honour `PGLITE_JOBS` instead of `nproc`.
-8. `wasmfs.txt` - ship the vector SQL, control and placeholder files.
+7. `wasm-build/build-pgcore.sh` - honour `PGLITE_JOBS` instead of `nproc`, and
+   append `${COPTS}` to the core CFLAGS.
+8. `wasm-build.sh` - the WASI release build compiles the core at `-O2`
+   (`COPTS`/`LOPTS`); upstream leaves the CFLAGS without an optimization flag,
+   so clang defaults to `-O0` and CPU-bound SQL is roughly twice as slow.
+9. `wasmfs.txt` - ship the extension SQL, control and placeholder files.
 
 ## Running the build
 
@@ -64,8 +72,9 @@ Outputs:
 ## Updating the vendored artifact
 
 1. Run the build.
-2. Verify it boots: `pytest -m integration tests/test_server.py` after
-   copying the files (or point `--pglite-wasm` at the build tree).
+2. Verify it boots: `pytest -m integration tests/test_server.py
+   tests/test_vector.py tests/test_pg_trgm.py` after copying the files (or
+   point `--pglite-wasm` at the build tree).
 3. Copy the tarballs into `src/pytest_pglite/_wasm/`, update `SHA256SUMS` and
    both `PROVENANCE.md` files, and bump the artifact filename/version in
    `src/pytest_pglite/artifacts.py`.
@@ -78,7 +87,7 @@ Outputs:
   directory. The `0001` patch removes the most common recovery wedge; a build
   with `-mllvm -wasm-enable-sjlj` is future work.
 - Extensions must be compiled into the module; only `plpgsql`, the snowball
-  dictionaries and `vector` are wired today. `gen_vector_symbols.py` is the
-  template for adding more.
+  dictionaries, `vector` and `pg_trgm` are wired today.
+  `gen_extension_symbols.py` is the template for adding more.
 - `bin/postgres` and `bin/initdb` inside the tarball are empty placeholders
   that satisfy the initdb code paths that probe for executables.
