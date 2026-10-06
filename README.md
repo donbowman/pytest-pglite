@@ -31,6 +31,11 @@ def test_users(pglite_engine):
 
 - **pg_trgm** - `CREATE EXTENSION pg_trgm` works out of the box, with the
   `similarity()` functions, the `%` operator and GIN/GiST trigram indexes.
+- **Common extensions included** - `hstore`, `citext`, `ltree`, `pg_trgm`,
+  `btree_gin`, `btree_gist`, `unaccent`, `earthdistance` and more are
+  bundled; see the list below.
+- **Real error handling** - SQL errors abort the transaction, not the
+  process: sessions keep running with the usual SQLSTATEs.
 - **Fast** - a warm worker starts in well under a second; per-test isolation
   resets take milliseconds.
 
@@ -103,10 +108,12 @@ There are no shared paths and no port collisions, so `pytest -n 4` just works.
 ## How it works
 
 The package embeds `pglite.wasi`, a WebAssembly build of PostgreSQL 17.5 with
-pgvector and pg_trgm statically linked. It is built from
-[electric-sql/pglite-build](https://github.com/electric-sql/pglite-build) by
-the pipeline in `build/` (see `build/README.md` for the patches and
-provenance). A small engine wrapper drives the WASI module through Wasmtime.
+pgvector and a set of contrib extensions statically linked, and with
+PostgreSQL's normal `setjmp`/`longjmp` error handling enabled. It is built
+from [electric-sql/pglite-build](https://github.com/electric-sql/pglite-build)
+with the newest wasi-sdk and Binaryen by the pipeline in `build/` (see
+`build/README.md` for the patches and provenance). A small engine wrapper
+drives the WASI module through Wasmtime.
 On top of the
 single-user backend, an asyncio Postgres wire-protocol proxy manages client
 connections: each connection is a logical session, and protocol exchanges are
@@ -127,7 +134,8 @@ Measured on the development machine (Linux x86_64, CPython 3.14):
 | Cold start (first ever, compiles WASM + initdb) | about 2.5 s |
 | Warm start, new worker (AOT + template cache) | about 0.25 s |
 | New connection | about 1 ms |
-| Query round trip (`pytest-pglite` overhead) | about 1.3 ms |
+| Query round trip (`pytest-pglite` overhead) | about 1 ms |
+| Aggregate over 200,000 rows | about 0.03 s |
 | Per-test schema reset | about 1 ms |
 
 Compiled-module files and an initialised database template are cached under
@@ -148,21 +156,28 @@ the platform cache directory; `pytest-xdist` workers share them.
   need: `LISTEN/NOTIFY` delivery is not implemented, and cancellation requests
   are accepted but not acted on.
 
-- `CREATE INDEX CONCURRENTLY` and `DROP INDEX CONCURRENTLY` are not supported.
-  The single-backend WASI port has no `setjmp`/`longjmp`, and the concurrent
-  build's internal transaction machinery aborts with `tuple concurrently
-  updated` (upstream [PGlite #901](https://github.com/electric-sql/pglite/issues/901)).
-  Use a plain `CREATE INDEX`, or pre-create the index so an `IF NOT EXISTS`
-  concurrent statement short-circuits.
+- `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY` and `REINDEX ...
+  CONCURRENTLY` are accepted for compatibility. The single-backend WASI port
+  cannot run the concurrent build's internal transaction machinery (upstream
+  [PGlite #901](https://github.com/electric-sql/pglite/issues/901)), so the
+  proxy rewrites the statement to its plain form; with one backend there are
+  no concurrent writers, and an `IF NOT EXISTS` statement still
+  short-circuits when the index exists. Disable the rewrite with
+  `--pglite-no-concurrent-index-rewrite` or
+  `PGLITE_REWRITE_CONCURRENT_INDEX=false`.
 - `COPY TO STDOUT` works; `COPY FROM STDIN` is rejected with SQLSTATE 0A000
   because libpglite's synchronous transport cannot stream `CopyData` during
   `CopyFrom`.
-- SQL errors kill the WebAssembly instance (the upstream WASI build has no
-  `setjmp`/`longjmp`). The Python host forwards the real ErrorResponse and
-  SQLSTATE, then restarts the backend over the same data directory when the
-  session cannot be recovered.
-- Extensions are compiled into the WASM module at build time; only the
-  bundled set (`plpgsql`, `vector`, `pg_trgm`) can be created.
+- SQL errors use PostgreSQL's own error recovery: the ErrorResponse and
+  SQLSTATE are forwarded and the backend keeps running, so transactions abort
+  and sessions continue exactly as in a normal server. The Python host keeps a
+  trap-recovery fallback (`PGliteServer.trap_count`) for unexpected
+  WebAssembly traps.
+- Extensions are compiled into the WASM module at build time. The bundled set
+  is pgvector plus `bloom`, `btree_gin`, `btree_gist`, `citext`, `cube`,
+  `dict_int`, `earthdistance`, `fuzzystrmatch`, `hstore`, `intarray`, `isn`,
+  `ltree`, `pg_trgm`, `seg`, `tablefunc`, `tsm_system_rows`,
+  `tsm_system_time` and `unaccent`.
 - No Windows support for Unix sockets; use `--pglite-tcp` on Windows.
 
 ## Development

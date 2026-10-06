@@ -261,6 +261,7 @@ class WireServer:
                 cid=self._cid,
                 pid=secrets.randbelow(1 << 31) or 1,
                 secret=secrets.randbelow(1 << 31) or 1,
+                rewrite_concurrent_index=self._config.rewrite_concurrent_index,
             )
             self._writers.add(writer)
             self._states.add(state)
@@ -466,6 +467,7 @@ class WireServer:
             trap_note = str(exc)
             first_line = trap_note.strip().splitlines()[0] if trap_note.strip() else ""
             self._log.debug("PGlite backend trap: %s", first_line)
+            self._engine.trap_count += 1
             state.on_error()
             reply = await self._engine.arun(self._engine.recover)
             try:

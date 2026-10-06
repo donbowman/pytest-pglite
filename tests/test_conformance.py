@@ -222,12 +222,11 @@ def test_generated_columns_and_views(conn: object) -> None:
 
 
 def test_create_index_concurrently_if_not_exists(server: PGliteServer) -> None:
-    """Documented workaround for the missing concurrent index support.
+    """An ``IF NOT EXISTS`` concurrent statement stays a no-op.
 
-    ``CREATE INDEX CONCURRENTLY`` itself fails on the single-backend WASI
-    port (PGlite #901), but an ``IF NOT EXISTS`` concurrent statement
-    short-circuits when the index is pre-created.  Migration frameworks that
-    pre-create indexes out-of-band rely on exactly this behaviour.
+    The proxy rewrites CONCURRENTLY away for the single-backend build
+    (PGlite #901); when the index already exists the plain statement must
+    still short-circuit instead of rebuilding it.
     """
     with psycopg.connect(server.dsn, autocommit=True) as conn:
         conn.execute("create table cic_demo (id int, name text)")

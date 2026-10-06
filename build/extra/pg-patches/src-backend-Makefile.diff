@@ -1,0 +1,11 @@
+--- REL_17_5_WASM/src/backend/Makefile
++++ REL_17_5_WASM-pglite/src/backend/Makefile
+@@ -96,7 +96,7 @@
+ postgres: $(OBJS)
+ 	$(AR) rcs $(top_builddir)/libpgmain.a $(PGMAIN)
+ 	$(AR) rcs $(LIBPG) $(filter-out $(PGMAIN),$(call expand_subsys,$(ONLYOBJS)))
+-	$(CC) -r -o $(top_builddir)/libpgcore.o -Wl,--whole-archive $(PGCORE)
++	$(CC) -r -nostdlib -o $(top_builddir)/libpgcore.o -Wl,--whole-archive $(PGCORE) $$($(CC) -print-file-name=crt1-command.o)
+ 	$(AR) rcs $(LIBPGCORE) $(top_builddir)/libpgcore.o
+ 	COPTS="$(LOPTS)" $(CC) $(MAIN_MODULE) $(CFLAGS) $(LDFLAGS) -nostartfiles -o $@ $(LIBPGCORE) $(top_builddir)/libpgmain.a $(LIBS)
+ 	mv $@ $@.wasi

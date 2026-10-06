@@ -12,7 +12,7 @@ from platformdirs import user_cache_dir
 
 from .errors import PGliteArtifactError
 
-ARTIFACT_FILENAME = "pglite-17.5.20261006b.tar.xz"
+ARTIFACT_FILENAME = "pglite-17.5.20261006c.tar.xz"
 WASM_DIR = Path(__file__).resolve().parent / "_wasm"
 PREFIX_RELATIVE = Path("tmp") / "pglite"
 WASM_RELATIVE = Path("bin") / "pglite.wasi"
