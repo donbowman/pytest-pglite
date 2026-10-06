@@ -1,5 +1,5 @@
 diff --git a/pglite-REL_17_4_WASM/build.sh b/pglite-REL_17_4_WASM/build.sh
-index b5f9907..32f15d9 100755
+index b5f9907..d71ba62 100755
 --- a/pglite-REL_17_4_WASM/build.sh
 +++ b/pglite-REL_17_4_WASM/build.sh
 @@ -89,6 +89,24 @@ ________________________________________________________
@@ -15,7 +15,7 @@ index b5f9907..32f15d9 100755
 +            for vector_c in "${VECTOR_SRC}"/src/*.c
 +            do
 +                vector_o="${BUILD_PATH}/vector/$(basename "${vector_c}" .c).o"
-+                if ! ${CC} -O2 -fPIC ${CC_PGLITE} ${PGINC} -c "${vector_c}" -o "${vector_o}"
++                if ! ${CC} -O2 -fPIC -D_PG_init=pglite_vector_PG_init ${CC_PGLITE} ${PGINC} -c "${vector_c}" -o "${vector_o}"
 +                then
 +                    echo "pgvector compilation failed: ${vector_c}"
 +                    exit 22
@@ -102,7 +102,7 @@ index 702f481..7013df2 100755
  
      # Get rid of some build stages for now
 diff --git a/wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c b/wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c
-index 44dac9e..2d43b34 100644
+index 44dac9e..7563615 100644
 --- a/wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c
 +++ b/wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c
 @@ -5,6 +5,12 @@
@@ -118,7 +118,57 @@ index 44dac9e..2d43b34 100644
  typedef struct dict_entry_s {
      const char *key;
      int value;
-@@ -190,6 +196,12 @@ dlsym(void *__restrict handle, const char *__restrict symbol) {
+@@ -81,7 +87,8 @@ ends_with(const char *str, const char *suffix)
+ 
+ // dlfcn.h
+ 
+-volatile dict_t* dltab[];
++#define DLTAB_MAX 64
++volatile dict_t* dltab[DLTAB_MAX];
+ volatile int dltab_index = 0;
+ 
+ void *
+@@ -126,24 +133,34 @@ extern void plpgsql_validator(void);
+ 
+ extern void _PG_init(void);
+ 
++extern void pglite_vector_PG_init(void);
++
+ 
+ void *
+ dlopen(const char *filename, int flags) {
+     dict_t tab = NULL;
+     fprintf(stderr,"void *dlopen(const char *filename = %s, int flags=%d)\n", filename, flags);
+-    for (int i=0; i< dltab_index; i++) {
+-        if ( dict_find_index(dltab[i], filename) > 0 )
+-            return (void *)i;
++    for (int i = 0; i < dltab_index; i++) {
++        if (dltab[i] && dict_find_index(dltab[i], filename) >= 0)
++            return (void *)(i + 1);
+     }
+-    printf("dlopen: new lib '%s'\n", filename );
++    printf("dlopen: new lib '%s'\n", filename);
+     if ( ends_with(filename,"/plpgsql.so") ){
+         puts(" ========= CALLING _PG_init =========");
+         _PG_init();
+     }
+ 
++    if ( ends_with(filename,"/vector.so") ){
++        puts(" ========= CALLING vector _PG_init =========");
++        pglite_vector_PG_init();
++    }
++
++    if (dltab_index >= DLTAB_MAX)
++        return NULL;
+     tab = dict_new();
+-    dict_add(tab, filename, dltab_index++ );
++    dict_add(tab, filename, dltab_index);
+     dltab[dltab_index] = tab;
++    dltab_index++;
+ 
+     return (void *)dltab_index;
+ }
+@@ -190,6 +207,12 @@ dlsym(void *__restrict handle, const char *__restrict symbol) {
          goto report;
      }
  
@@ -132,10 +182,18 @@ index 44dac9e..2d43b34 100644
      fprintf(stderr, "void *dlsym(void *handle = %p, const char *symbol = %s) => %p\n", handle, symbol, sym);
      return sym;
 diff --git a/wasmfs.txt b/wasmfs.txt
-index 3473edd..d4a231a 100644
+index 3473edd..77d7b4c 100644
 --- a/wasmfs.txt
 +++ b/wasmfs.txt
-@@ -9,6 +9,8 @@
+@@ -2,6 +2,7 @@
+ /tmp/pglite/bin/postgres
+ /tmp/pglite/bin/pglite.wasi
+ /tmp/pglite/lib/postgresql/dict_snowball.so
++/tmp/pglite/lib/postgresql/vector.so
+ /tmp/pglite/lib/postgresql/llvmjit.so
+ /tmp/pglite/lib/postgresql/plpgsql.so
+ /tmp/pglite/locale
+@@ -9,6 +10,8 @@
  /tmp/pglite/share/postgresql/extension/plpgsql--1.0.control
  /tmp/pglite/share/postgresql/extension/plpgsql--1.0.sql
  /tmp/pglite/share/postgresql/extension/plpgsql.control

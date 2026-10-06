@@ -14,16 +14,24 @@ and applies `patches/0001-vector-static.patch`, which:
 1. `wasm-build/build-ext.sh` - in WASI mode, run `extra/*-wasi.sh` build steps
    instead of skipping all extensions.
 2. `extra/vector-wasi.sh` (added separately, not part of the patch) - install
-   `vector.control` and `vector--0.8.0.sql` and generate the dlsym table.
-3. `wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c` - include the generated
-   symbol table and consult it from `dlsym`.
-4. `pglite-REL_17_4_WASM/build.sh` - compile pgvector's C sources with the
-   WASI toolchain and add the objects to the `pglite.wasi` link.
-5. `pglite-REL_17_4_WASM/interactive_one.c` - clear `ActivePortal` during
+   `vector.control` and `vector--0.8.0.sql`, create the `vector.so` placeholder
+   that PostgreSQL stats before `dlopen`, and generate the dlsym table.
+3. `wasm-build/gen_vector_symbols.py` (added separately) - parse the extension
+   SQL and emit one table entry per C symbol, honouring
+   `AS 'MODULE_PATHNAME', 'symbol'` aliases.
+4. `wasm-build/sdk_port-wasi/sdk_port-wasi-dlfcn.c` - consult the generated
+   table from `dlsym`, call pgvector's `_PG_init` from `dlopen`, and fix the
+   upstream `dltab` bug (a one-element tentative array with an off-by-one that
+   corrupted memory on the second `dlopen`).
+5. `pglite-REL_17_4_WASM/build.sh` - compile pgvector's C sources with
+   `_PG_init` renamed to `pglite_vector_PG_init` (plpgsql defines `_PG_init`
+   too) and add the objects to the `pglite.wasi` link.
+6. `pglite-REL_17_4_WASM/interactive_one.c` - clear `ActivePortal` during
    trap recovery. Without `sigsetjmp` the active portal is never unwound and
    `PortalErrorCleanup()` aborts with "cannot drop active portal", wedging the
    session after a simple-query error.
-6. `wasmfs.txt` - ship the vector SQL and control files in the tarball.
+7. `wasm-build/build-pgcore.sh` - honour `PGLITE_JOBS` instead of `nproc`.
+8. `wasmfs.txt` - ship the vector SQL, control and placeholder files.
 
 ## Running the build
 

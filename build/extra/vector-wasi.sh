@@ -16,6 +16,9 @@ if [ ! -d "${VECTOR}/src" ]; then
 fi
 
 mkdir -p "${PGROOT}/share/postgresql/extension"
+# PostgreSQL checks that the library file exists before dlopen.
+mkdir -p "${PGROOT}/lib/postgresql"
+touch "${PGROOT}/lib/postgresql/vector.so"
 cp "${VECTOR}/vector.control" "${PGROOT}/share/postgresql/extension/"
 cp "${VECTOR}/sql/vector.sql" \
    "${PGROOT}/share/postgresql/extension/vector--0.8.0.sql"
