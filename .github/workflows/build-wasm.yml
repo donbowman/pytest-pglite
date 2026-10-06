@@ -12,7 +12,7 @@ jobs:
       # Upstream defaults to `make -j$(nproc)`; keep the runner within memory.
       PGLITE_JOBS: "4"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: System dependencies
         run: |
           sudo apt-get update
