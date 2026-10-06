@@ -47,7 +47,7 @@ jobs:
       - name: Install dependencies
         run: poetry install --all-extras
       - name: Cache PGlite artifact cache (AOT + template)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pytest-pglite
