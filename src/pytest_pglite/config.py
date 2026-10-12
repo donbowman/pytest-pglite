@@ -7,6 +7,7 @@ the pytest command line options documented in :mod:`pytest_pglite.plugin`.
 
 from __future__ import annotations
 
+import json
 import re
 from enum import StrEnum
 from pathlib import Path
@@ -116,6 +117,92 @@ class PGliteConfig(BaseSettings):
     database: str = Field(default="template1")
     password: str = Field(default="password")
 
+    # ------------------------------------------------------------------
+    # guest heap and instance lifecycle
+    # ------------------------------------------------------------------
+    restart_every_n_tests: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Restart the PGlite instance after this many tests, keeping the "
+            "data directory. WebAssembly linear memory can grow but never "
+            "shrink, so a long suite ratchets the guest heap up until an "
+            "allocation finally fails; a periodic restart returns it to its "
+            "starting size and costs a fraction of a second."
+        ),
+    )
+    heap_restart_mb: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Restart the instance when the guest heap exceeds this many MiB, "
+            "checked between tests. Use it alone or together with "
+            "restart_every_n_tests."
+        ),
+    )
+    restart_on_out_of_memory: bool = Field(
+        default=True,
+        description=(
+            "Restart the instance when the backend reports out of memory "
+            "(SQLSTATE 53200), so one exhausted test does not fail every "
+            "subsequent test in the run."
+        ),
+    )
+    oom_restart_limit: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Give up restarting after this many out-of-memory restarts in one "
+            "session, so a workload that genuinely cannot fit fails fast."
+        ),
+    )
+    session_settings: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Extra SET name=value pairs applied to the backend session at "
+            "startup, merged over the WASM-tuned defaults (a 16 MB "
+            "maintenance_work_mem, no parallel workers, jit off). Set a value "
+            "to '' to drop one of the defaults."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # host memory configuration (wasmtime)
+    # ------------------------------------------------------------------
+    memory_reservation_mb: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Initial virtual address space reserved per guest memory, in MiB. "
+            "The default reserves several GiB per instance, which is wasteful "
+            "when many instances run at once (for example pytest-xdist "
+            "workers). Lowering it does not lower the guest ceiling."
+        ),
+    )
+    memory_reservation_for_growth_mb: int | None = Field(
+        default=None,
+        ge=0,
+        description="Extra address space reserved per memory after a growth move.",
+    )
+    memory_guard_size_mb: int | None = Field(
+        default=None,
+        ge=0,
+        description="Guard region reserved after each guest memory, in MiB.",
+    )
+    memory_may_move: bool | None = Field(
+        default=None,
+        description=(
+            "Whether a guest memory may be relocated to grow. False makes "
+            "memory_reservation a hard ceiling; True (the default) lets the "
+            "memory move and keep growing."
+        ),
+    )
+    max_wasm_stack_mb: int | None = Field(
+        default=None,
+        ge=1,
+        description="Maximum WebAssembly operand stack per instance, in MiB.",
+    )
+
     @field_validator("extensions", mode="before")
     @classmethod
     def _split_extensions(cls, value: object) -> object:
@@ -144,6 +231,27 @@ class PGliteConfig(BaseSettings):
     def _expand(cls, value: object) -> object:
         if isinstance(value, str) and value:
             return Path(value).expanduser()
+        return value
+
+    @field_validator("session_settings", mode="before")
+    @classmethod
+    def _decode_session_settings(cls, value: object) -> object:
+        """Accept a JSON object from the environment.
+
+        ``model_config`` turns off pydantic-settings' own JSON decoding (it
+        would try to decode every complex field), so a mapping supplied as
+        ``PGLITE_SESSION_SETTINGS='{"work_mem": "8MB"}'`` is decoded here.
+        """
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"session_settings must be a JSON object: {exc}"
+                ) from exc
+            if not isinstance(decoded, dict):
+                raise ValueError("session_settings must be a JSON object")
+            return decoded
         return value
 
     @field_validator("log_level")

@@ -77,10 +77,78 @@ point, so there is nothing to import or configure.
 --pglite-wasm=PATH                Use a custom pglite.wasi build
 --pglite-keep-tmp                 Keep the temporary database directory
 --pglite-log-level=INFO           Engine log level
+--pglite-restart-every=N          Restart the instance every N tests (see below)
+--pglite-heap-restart-mb=MB       Restart the instance when its guest heap exceeds MB
+--pglite-no-oom-restart           Do not restart automatically after an out of memory
+--pglite-memory-reservation-mb=MB Address space reserved per guest memory
 ```
 
 All options can also be set with environment variables using the `PGLITE_`
 prefix, for example `PGLITE_ISOLATION=transaction`.
+
+## Long runs and the guest heap
+
+PGlite runs PostgreSQL inside a 32-bit WebAssembly linear memory. That memory
+can **grow but never shrink**, so the guest heap only ever creeps upwards for
+the life of an instance, and a long enough session eventually reaches the
+ceiling (about 4 GiB). When it does, PostgreSQL reports SQLSTATE `53200` for an
+ordinary small allocation, and from then on *every* query fails with a
+confusing "out of memory" even though the host has RAM to spare.
+
+Measured on a real suite (one instance, small tests, a schema reset per test):
+the heap climbs by roughly 2.5 MiB per test, so a few thousand tests reach the
+ceiling. Nothing in PostgreSQL gives the memory back; the only recovery is to
+replace the instance, which `pytest-pglite` can do over the same data directory.
+
+```bash
+pytest --pglite-restart-every=500          # bound it by test count
+pytest --pglite-heap-restart-mb=1500       # or by heap size, checked between tests
+```
+
+Both keep the data; the cost is a fresh backend session, so prepared statements
+and session state are gone (the next test reconnects). A restart is only taken
+between tests, and only when no connection holds the backend. Set
+`PGLITE_RESTART_EVERY_N_TESTS` or `PGLITE_HEAP_RESTART_MB` in a test
+environment to make it the default for a whole suite.
+
+Independently of any policy, an out-of-memory error triggers one automatic
+restart so a single exhausted test does not fail the rest of the run
+(`--pglite-no-oom-restart` turns that off, `oom_restart_limit` bounds it).
+
+The library also reads and reports the heap, which is the number to watch:
+
+```python
+server.heap_bytes        # current guest heap, bytes
+server.heap_limit_bytes  # the artifact's declared ceiling, or None (unbounded)
+server.restarts          # policy restarts so far
+server.oom_restarts      # restarts caused by an out-of-memory error
+server.restart("reason") # replace the instance, keeping the data
+```
+
+Three further things help a long run, and all are on by default:
+
+- **Session settings tuned for one WASM backend**: `maintenance_work_mem=16MB`,
+  `max_parallel_workers_per_gather=0`, `max_parallel_maintenance_workers=0` and
+  `jit=off`. Parallel workers cannot run in parallel here, and a 64 MB
+  maintenance_work_mem is a large transient spike for an index build. Override
+  or drop any of them, per suite, with `session_settings` (a value of `''`
+  drops a default):
+
+  ```python
+  PGliteConfig(session_settings={"maintenance_work_mem": "32MB", "jit": ""})
+  ```
+
+- **A host memory configuration** for many instances at once. By default
+  Wasmtime reserves several GiB of *virtual* address space per guest memory
+  (measured: 16.5 GiB per instance, with only about 0.6 GiB resident). With
+  `pytest -n 8` that is over 100 GiB of reservations. Lower it with
+  `PGLITE_MEMORY_RESERVATION_MB`, `PGLITE_MEMORY_GUARD_SIZE_MB` and
+  `memory_reservation_for_growth_mb`. Note this does **not** change the guest
+  ceiling: the 32-bit address space is the limit, and only restarting reclaims
+  the heap.
+
+- **The heap size in the log**: the startup line reports the heap and the
+  declared ceiling, and an out-of-memory restart logs the heap it hit.
 
 ## Standalone server
 
@@ -143,6 +211,12 @@ the platform cache directory; `pytest-xdist` workers share them.
 
 ## Limitations
 
+- The guest heap only grows. PostgreSQL runs inside a 32-bit WebAssembly
+  linear memory that is never returned to the host, so a long session
+  eventually reaches the ceiling and fails small allocations with SQLSTATE
+  53200. Set a restart policy (`--pglite-restart-every` or
+  `--pglite-heap-restart-mb`) for a long suite; see
+  [Long runs and the guest heap](#long-runs-and-the-guest-heap).
 - Single database, single user (`postgres`). `CREATE DATABASE` and connected
   database switching are not supported.
 - Single backend: work from concurrent connections is queued, and a connection

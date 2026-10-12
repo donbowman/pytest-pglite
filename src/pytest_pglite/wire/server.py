@@ -166,7 +166,13 @@ class WireServer:
         self._lease = BackendLease()
         self._cid = 0
         self._closing = False
+        self._oom_restarts = 0
         self.port: int | None = None
+
+    @property
+    def oom_restarts(self) -> int:
+        """Out-of-memory restarts performed so far this session."""
+        return self._oom_restarts
 
     @property
     def socket_path(self) -> Path | None:
@@ -448,11 +454,64 @@ class WireServer:
         writer.write(data)
         await writer.drain()
 
-    async def _restart_engine(self, reason: str) -> None:
+    async def restart_engine(self, reason: str) -> None:
         self._log.warning("%s; restarting the PGlite instance", reason)
         await self._engine.arun(self._engine.restart)
         for known in self._states:
             known.reset_after_restart()
+
+    async def restart_if_idle(self, reason: str) -> bool:
+        """Restart the guest instance when no connection holds the backend.
+
+        Returns True when the instance was replaced. Returns False when a
+        client holds the backend (an open transaction), because replacing the
+        instance would silently discard its work; the caller can try again
+        later.
+        """
+        if self._lease.owner is not None:
+            self._log.debug("skipping restart (%s): backend is in use", reason)
+            return False
+        await self.restart_engine(reason)
+        return True
+
+    async def _recover_out_of_memory(self, message: str | None) -> None:
+        """Recover from a guest heap exhaustion.
+
+        The guest's linear memory can grow but never shrink, so once the
+        ceiling is reached every later allocation fails and the rest of the run
+        would fail with a confusing "out of memory". Replacing the instance over
+        the same data directory returns the heap to its starting size, so one
+        test fails instead of hundreds.
+        """
+        heap_mib = self._engine.heap_bytes / (1 << 20)
+        limit = self._engine.heap_limit_bytes
+        ceiling = "unbounded" if limit is None else f"{limit / (1 << 20):.1f} MiB"
+        if not self._config.restart_on_out_of_memory:
+            self._log.error(
+                "PGlite guest heap exhausted at %.1f MiB (%s): %s. "
+                "restart_on_out_of_memory is disabled; every later query will "
+                "fail until the instance is restarted.",
+                heap_mib,
+                ceiling,
+                message or "out of memory",
+            )
+            return
+        if self._oom_restarts >= self._config.oom_restart_limit:
+            self._log.error(
+                "PGlite guest heap exhausted at %.1f MiB (%s) again, and the "
+                "restart limit (%d) is reached. Set restart_every_n_tests or "
+                "heap_restart_mb to reclaim the heap before this point, or "
+                "split the run.",
+                heap_mib,
+                ceiling,
+                self._config.oom_restart_limit,
+            )
+            return
+        self._oom_restarts += 1
+        await self.restart_engine(
+            f"guest heap exhausted at {heap_mib:.1f} MiB of {ceiling} "
+            f"({message or 'out of memory'})"
+        )
 
     async def _exchange(
         self, state: ConnState, payload: bytes
@@ -478,16 +537,18 @@ class WireServer:
             if not recovered_has_error:
                 reply = error_response(f"PGlite backend error: {trap_note}") + reply
             if not await self._engine.arun(self._engine.probe):
-                await self._restart_engine("backend wedged after a trap")
+                await self.restart_engine("backend wedged after a trap")
         try:
             scan = scan_backend(reply)
         except PGliteProtocolError:
             # A FATAL abort can leave a partial message in the transport. The
             # session is not trustworthy any more; restart over the same data.
-            await self._restart_engine("malformed backend reply")
+            await self.restart_engine("malformed backend reply")
             reply = b""
             scan = scan_backend(b"")
             trapped = True
+        if scan.is_out_of_memory:
+            await self._recover_out_of_memory(scan.error_message)
         ready = scan.ready_status
         if trapped and pipeline_open and ready is not None:
             # libpglite flushed ReadyForQuery while the client's extended

@@ -48,6 +48,13 @@ BE_COMMAND_COMPLETE = b"C"
 BE_ROW_DESCRIPTION = b"T"
 BE_DATA_ROW = b"D"
 BE_EMPTY_QUERY = b"I"
+
+#: SQLSTATE raised by the backend when it cannot allocate.
+#:
+#: In a WebAssembly linear memory this means the guest hit its memory ceiling
+#: (the host has RAM to spare), and the instance never gives it back, so the
+#: recovery is to restart the instance over the same data directory.
+OUT_OF_MEMORY = "53200"
 BE_NO_DATA = b"n"
 BE_PORTAL_SUSPENDED = b"s"
 BE_PARAMETER_DESCRIPTION = b"t"
@@ -247,7 +254,19 @@ class BackendScan:
     ready_status: str | None = None
     has_error: bool = False
     error_message: str | None = None
+    error_code: str | None = None
     parameter_statuses: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def is_out_of_memory(self) -> bool:
+        """True when the backend failed with SQLSTATE 53200.
+
+        Inside a WebAssembly linear memory this is not "the host is out of
+        RAM": the guest cannot grow past its memory ceiling, and the ceiling
+        never shrinks again for the life of the instance.  Callers treat it as
+        a signal to restart the instance, not as a query error.
+        """
+        return self.error_code == OUT_OF_MEMORY
 
 
 def iter_backend_messages(data: bytes) -> list[BackendMessage]:
@@ -278,6 +297,7 @@ def scan_backend(data: bytes) -> BackendScan:
         elif message.type == BE_ERROR_RESPONSE:
             scan.has_error = True
             scan.error_message = parse_error_fields(message.payload)
+            scan.error_code = parse_error_code(message.payload)
         elif message.type == BE_PARAMETER_STATUS:
             name, offset = read_cstring(message.payload, 0)
             value, _ = read_cstring(message.payload, offset)
@@ -306,13 +326,27 @@ def strip_ready_for_query(data: bytes) -> bytes:
 
 def parse_error_fields(payload: bytes) -> str | None:
     """Extract the message field from an ErrorResponse payload."""
+    return parse_error_field(payload, b"M")
+
+
+def parse_error_code(payload: bytes) -> str | None:
+    """Extract the SQLSTATE field from an ErrorResponse payload.
+
+    PostgreSQL tags the condition name and code as ``V`` and ``C``; the code is
+    what callers match on (for example ``53200``, out of memory).
+    """
+    return parse_error_field(payload, b"C")
+
+
+def parse_error_field(payload: bytes, want: bytes) -> str | None:
+    """Extract one tagged field from an ErrorResponse payload."""
     offset = 0
     while offset < len(payload):
         if payload[offset] == 0:
             break
         tag = payload[offset : offset + 1]
         value, offset = read_cstring(payload, offset + 1)
-        if tag == b"M":
+        if tag == want:
             return value.decode("utf-8", "replace")
     return None
 
