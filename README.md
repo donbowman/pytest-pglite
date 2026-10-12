@@ -139,13 +139,27 @@ Three further things help a long run, and all are on by default:
   ```
 
 - **A host memory configuration** for many instances at once. By default
-  Wasmtime reserves several GiB of *virtual* address space per guest memory
-  (measured: 16.5 GiB per instance, with only about 0.6 GiB resident). With
-  `pytest -n 8` that is over 100 GiB of reservations. Lower it with
-  `PGLITE_MEMORY_RESERVATION_MB`, `PGLITE_MEMORY_GUARD_SIZE_MB` and
-  `memory_reservation_for_growth_mb`. Note this does **not** change the guest
-  ceiling: the 32-bit address space is the limit, and only restarting reclaims
-  the heap.
+  Wasmtime reserves a large amount of *virtual* address space per instance
+  (measured at 16.5 GiB, with only about 0.6 GiB resident), so `pytest -n 8`
+  reserves over 100 GiB. Setting the reservation and the growth reservation
+  cuts that roughly in half, measured on one instance:
+
+  | Configuration | Virtual address space |
+  | --- | --- |
+  | default | 16.5 GiB |
+  | `memory_reservation_mb=1024` | 10.5 GiB |
+  | `memory_reservation_mb=1024`, `memory_reservation_for_growth_mb=1024` | 10.5 GiB |
+  | `memory_reservation_mb=512`, `memory_reservation_for_growth_mb=512` | 9.5 GiB |
+  | `memory_reservation_mb=1`, `memory_reservation_for_growth_mb=1` | 8.6 GiB |
+
+  A very small reservation also means frequent relocation when the memory
+  grows, so pick a reservation comfortably above the heap a run reaches
+  (the restart policy keeps that bounded). `memory_guard_size_mb` is exposed
+  too but barely moves the total (16.5 to 16.4 GiB measured). This is the
+  modern replacement for `static_memory_maximum_size(0)`, which the current
+  bindings no longer expose. **None of it changes the guest ceiling**: the
+  32-bit address space is the limit, growth still works in every configuration
+  above, and only a restart reclaims the heap.
 
 - **The heap size in the log**: the startup line reports the heap and the
   declared ceiling, and an out-of-memory restart logs the heap it hit.

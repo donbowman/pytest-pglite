@@ -179,16 +179,21 @@ class WasmEngine:
 
         Every option is optional and the bindings differ between wasmtime
         releases (``static_memory_maximum_size``, for example, no longer
-        exists), so a missing or rejected option is a warning rather than a
-        startup failure.
+        exists), so an option this build does not have is a warning rather
+        than a startup failure.
+
+        The presence check looks at the *class* on purpose: wasmtime's
+        ``Config`` accepts arbitrary attribute assignment, so a plain
+        ``setattr`` would silently swallow a typo, while several of its memory
+        options are write-only properties, so ``getattr``/``hasattr`` on the
+        instance reports them as missing.
         """
         for name, value in self._memory_options.items():
-            setter = getattr(wasmtime_config, name, None)
-            if setter is None:
+            if not hasattr(type(wasmtime_config), name):
                 self._log.warning("wasmtime has no %s option; ignoring %r", name, value)
                 continue
             try:
-                setter(value)
+                setattr(wasmtime_config, name, value)
             except (TypeError, ValueError, AttributeError) as exc:
                 self._log.warning(
                     "could not apply wasmtime %s=%r: %s", name, value, exc

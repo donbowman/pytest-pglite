@@ -413,6 +413,36 @@ def test_memory_option_names_missing_from_wasmtime_are_ignored(caplog) -> None:
     assert "has no static_memory_maximum_size option" in caplog.text
 
 
+def test_memory_options_are_applied_to_write_only_properties() -> None:
+    """wasmtime's memory options are write-only, so presence is checked on the type.
+
+    ``getattr`` on the instance raises for these (there is no getter), which
+    would make a naive probe skip an option that actually works, and
+    ``Config`` accepts arbitrary attribute assignment, so setattr alone would
+    silently swallow a typo.
+    """
+    from pytest_pglite.engine import WasmEngine
+
+    applied: list[tuple[str, object]] = []
+
+    class FakeWasmtimeConfig:
+        @property
+        def memory_reservation(self) -> int:  # pragma: no cover - never read
+            raise AssertionError("never read")
+
+        @memory_reservation.setter
+        def memory_reservation(self, value: int) -> None:
+            applied.append(("memory_reservation", value))
+
+    engine = WasmEngine.__new__(WasmEngine)
+    engine._memory_options = {"memory_reservation": 512 << 20}
+    engine._log = logging.getLogger("pytest_pglite.engine")
+
+    engine._apply_memory_options(FakeWasmtimeConfig())
+
+    assert applied == [("memory_reservation", 512 << 20)]
+
+
 def test_default_session_settings_are_documented() -> None:
     assert DEFAULT_SESSION_SETTINGS["maintenance_work_mem"] == "16MB"
     assert DEFAULT_SESSION_SETTINGS["max_parallel_workers_per_gather"] == "0"
