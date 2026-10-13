@@ -77,6 +77,33 @@ black = ">=26.10,<27"
 flake8 = ">=7.4,<8"
 mypy = ">=2.4,<3"
 
+[tool.semantic_release]
+# The tag is the source of truth for the version; PSR stamps the value it
+# derives from the commits since the last tag into [project].version below.
+version_toml = ["pyproject.toml:project.version"]
+tag_format = "v{version}"
+allow_zero_version = true
+commit_parser = "conventional"
+commit_message = "chore(release): {version}"
+
+[tool.semantic_release.commit_parser_options]
+# Pull requests are squash-merged, so the merge commit carries the whole pull
+# request body. Parse each line so a "feat:" in the body still counts, and
+# ignore the "Merge branch ..." commits made by hand.
+parse_squash_commits = true
+ignore_merge_commits = true
+
+[tool.semantic_release.changelog]
+# Commits that do not change the package are kept out of the changelog.
+exclude_commit_patterns = [
+    '''chore(?:\([^)]*?\))?: .+''',
+    '''ci(?:\([^)]*?\))?: .+''',
+    '''refactor(?:\([^)]*?\))?: .+''',
+    '''style(?:\([^)]*?\))?: .+''',
+    '''test(?:\([^)]*?\))?: .+''',
+    '''Initial [Cc]ommit.*''',
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
