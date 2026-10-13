@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import struct
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -50,6 +51,33 @@ from .protocol import (
 INPUT_ADDRESS = 1
 SOCKET_FILE_NAME = ".s.PGSQL.5432.out"
 
+#: 64 KiB, the WebAssembly page size the module uses.
+WASM_PAGE_BYTES = 65536
+
+#: Session settings tuned for a 32-bit WebAssembly guest.
+#:
+#: PostgreSQL's own defaults assume a server with threads and lots of address
+#: space. Inside one single-threaded linear memory they only inflate the
+#: high-water mark that the instance can never give back: parallel workers
+#: cannot run in parallel anyway, a 64 MB maintenance_work_mem is a large
+#: transient spike for an index build, and the LLVM JIT has nothing to compile
+#: for. Lowering them slows the creep towards the ceiling; it does not raise
+#: the ceiling. A host can override or drop any of these with
+#: ``session_settings``.
+DEFAULT_SESSION_SETTINGS: dict[str, str] = {
+    "maintenance_work_mem": "16MB",
+    "max_parallel_workers_per_gather": "0",
+    "max_parallel_maintenance_workers": "0",
+    "jit": "off",
+}
+
+_SETTING_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+
+
+def _quote_setting(value: str) -> str:
+    """Render a GUC value for a SET statement."""
+    return "'" + value.replace("'", "''") + "'"
+
 
 class WasmEngine:
     """Synchronous engine; all entry points run on a single worker thread."""
@@ -66,6 +94,12 @@ class WasmEngine:
         database: str = "template1",
         password: str = "password",
         log_level: str = "INFO",
+        session_settings: dict[str, str] | None = None,
+        memory_reservation_mb: int | None = None,
+        memory_reservation_for_growth_mb: int | None = None,
+        memory_guard_size_mb: int | None = None,
+        memory_may_move: bool | None = None,
+        max_wasm_stack_mb: int | None = None,
     ) -> None:
         self._prefix = prefix
         self._work_dir = work_dir
@@ -76,6 +110,20 @@ class WasmEngine:
         self._database = database
         self._password = password
         self._log_level = log_level
+        self._session_setting_overrides = dict(session_settings or {})
+        self._memory_options: dict[str, int | bool] = {}
+        if memory_reservation_mb is not None:
+            self._memory_options["memory_reservation"] = memory_reservation_mb << 20
+        if memory_reservation_for_growth_mb is not None:
+            self._memory_options["memory_reservation_for_growth"] = (
+                memory_reservation_for_growth_mb << 20
+            )
+        if memory_guard_size_mb is not None:
+            self._memory_options["memory_guard_size"] = memory_guard_size_mb << 20
+        if memory_may_move is not None:
+            self._memory_options["memory_may_move"] = memory_may_move
+        if max_wasm_stack_mb is not None:
+            self._memory_options["max_wasm_stack"] = max_wasm_stack_mb << 20
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="pglite-engine"
         )
@@ -117,6 +165,7 @@ class WasmEngine:
             wasmtime_config.wasm_exceptions = True
         except AttributeError:  # pragma: no cover - older wasmtime
             pass
+        self._apply_memory_options(wasmtime_config)
         engine = Engine(wasmtime_config)
         module = load_module(
             engine, wasm, self._cache_dir, self._cache_key, self._use_aot
@@ -124,6 +173,31 @@ class WasmEngine:
         self._wasmtime_engine = engine
         self._module = module
         self._start_instance()
+
+    def _apply_memory_options(self, wasmtime_config: Any) -> None:
+        """Apply the host memory configuration, one option at a time.
+
+        Every option is optional and the bindings differ between wasmtime
+        releases (``static_memory_maximum_size``, for example, no longer
+        exists), so an option this build does not have is a warning rather
+        than a startup failure.
+
+        The presence check looks at the *class* on purpose: wasmtime's
+        ``Config`` accepts arbitrary attribute assignment, so a plain
+        ``setattr`` would silently swallow a typo, while several of its memory
+        options are write-only properties, so ``getattr``/``hasattr`` on the
+        instance reports them as missing.
+        """
+        for name, value in self._memory_options.items():
+            if not hasattr(type(wasmtime_config), name):
+                self._log.warning("wasmtime has no %s option; ignoring %r", name, value)
+                continue
+            try:
+                setattr(wasmtime_config, name, value)
+            except (TypeError, ValueError, AttributeError) as exc:
+                self._log.warning(
+                    "could not apply wasmtime %s=%r: %s", name, value, exc
+                )
 
     def restart(self) -> None:
         """Replace the backend instance, keeping the data directory."""
@@ -139,6 +213,38 @@ class WasmEngine:
     @property
     def started(self) -> bool:
         return self._started
+
+    @property
+    def heap_bytes(self) -> int:
+        """Current size of the guest linear memory, in bytes.
+
+        This is the number that only ever grows over a session: it is what
+        eventually reaches the 32-bit WebAssembly ceiling (about 4 GiB) and
+        makes small allocations fail.
+        """
+        if self._store is None or self._exports is None:
+            return 0
+        try:
+            return int(self._memory().data_len(self._store))
+        except KeyError, TypeError:  # pragma: no cover - defensive
+            return 0
+
+    @property
+    def heap_limit_bytes(self) -> int | None:
+        """The ceiling the module declares for its memory, if any.
+
+        ``None`` means the module declares no maximum, so the ceiling is the
+        WebAssembly 32-bit address space rather than a number in the artifact.
+        """
+        if self._store is None or self._exports is None:
+            return None
+        try:
+            limits = self._memory().type(self._store).limits
+        except AttributeError, KeyError, TypeError:  # pragma: no cover
+            return None
+        if limits.max is None:
+            return None
+        return int(limits.max) * WASM_PAGE_BYTES
 
     def ensure_extension(self, name: str) -> None:
         """Create an extension in the shared session database."""
@@ -187,9 +293,16 @@ class WasmEngine:
         self._prepare_session()
         self._started = True
         self._log.debug(
-            "engine ready: initdb/resume %.0fms, backend+login %.0fms, status %s",
+            "engine ready: initdb/resume %.0fms, backend+login %.0fms, "
+            "heap %.1f MiB of %s, status %s",
             (initialized_at - started_at) * 1000,
             (time.perf_counter() - initialized_at) * 1000,
+            self.heap_bytes / (1 << 20),
+            (
+                "unbounded"
+                if self.heap_limit_bytes is None
+                else f"{self.heap_limit_bytes / (1 << 20):.1f} MiB"
+            ),
             bin(status),
         )
 
@@ -329,6 +442,33 @@ class WasmEngine:
         self._simple("CREATE SCHEMA IF NOT EXISTS public")
         self._simple("SET search_path TO public")
         self._simple("SET client_min_messages TO warning")
+        self._apply_session_settings()
+
+    def _session_settings(self) -> dict[str, str]:
+        """The WASM-tuned defaults with the host's overrides applied.
+
+        A host value of ``''`` drops a default rather than setting it.
+        """
+        merged = dict(DEFAULT_SESSION_SETTINGS)
+        for name, value in self._session_setting_overrides.items():
+            if value == "":
+                merged.pop(name, None)
+            else:
+                merged[name] = value
+        return merged
+
+    def _apply_session_settings(self) -> None:
+        """Apply the session settings, warning on any that this build rejects."""
+        for name, value in self._session_settings().items():
+            if not _SETTING_NAME_RE.match(name):
+                self._log.warning("ignoring invalid session setting name %r", name)
+                continue
+            try:
+                self._simple(f"SET {name} = {_quote_setting(value)}")
+            except PGliteError as exc:
+                # Tuning must never stop the engine from starting: a custom
+                # artifact may be built without a given GUC.
+                self._log.warning("could not apply session setting %s: %s", name, exc)
 
     def _simple(self, sql: str) -> None:
         reply = self.exchange(build_query(sql))

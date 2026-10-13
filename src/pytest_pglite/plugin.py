@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from .config import IsolationMode, PGliteConfig
-from .server import PGliteServer
+from .server import PGliteServer, live_servers
 
 _RESET_STATEMENTS = (
     "DROP SCHEMA IF EXISTS public CASCADE",
@@ -84,6 +84,58 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         metavar="LEVEL",
         help="Engine log level: DEBUG, INFO, WARNING or ERROR.",
     )
+    group.addoption(
+        "--pglite-restart-every",
+        action="store",
+        default=None,
+        metavar="N",
+        help=(
+            "Restart the PGlite instance every N tests. WebAssembly linear "
+            "memory can grow but never shrink, so a long suite ratchets the "
+            "guest heap up until allocations fail; a periodic restart returns "
+            "it to its starting size and keeps the data."
+        ),
+    )
+    group.addoption(
+        "--pglite-heap-restart-mb",
+        action="store",
+        default=None,
+        metavar="MB",
+        help="Restart the instance when its guest heap exceeds MB, between tests.",
+    )
+    group.addoption(
+        "--pglite-no-oom-restart",
+        action="store_true",
+        default=None,
+        help="Do not restart automatically when the guest runs out of memory.",
+    )
+    group.addoption(
+        "--pglite-memory-reservation-mb",
+        action="store",
+        default=None,
+        metavar="MB",
+        help=(
+            "Virtual address space reserved per guest memory, in MiB. The "
+            "default reserves several GiB per instance, which matters when "
+            "many run at once (for example pytest-xdist workers)."
+        ),
+    )
+
+
+def _int_option(config: pytest.Config, name: str, display: str) -> int | None:
+    """Read a positive integer command-line option, or None when unset."""
+    raw = config.getoption(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except TypeError, ValueError:
+        raise pytest.UsageError(
+            f"{display} expects a whole number, got {raw!r}"
+        ) from None
+    if value < 1:
+        raise pytest.UsageError(f"{display} must be at least 1, got {value}")
+    return value
 
 
 def _config_from_options(config: pytest.Config) -> PGliteConfig:
@@ -123,6 +175,23 @@ def _config_from_options(config: pytest.Config) -> PGliteConfig:
     log_level = config.getoption("pglite_log_level")
     if log_level is not None:
         values["log_level"] = log_level
+    restart_every = _int_option(
+        config, "pglite_restart_every", "--pglite-restart-every"
+    )
+    if restart_every is not None:
+        values["restart_every_n_tests"] = restart_every
+    heap_restart = _int_option(
+        config, "pglite_heap_restart_mb", "--pglite-heap-restart-mb"
+    )
+    if heap_restart is not None:
+        values["heap_restart_mb"] = heap_restart
+    if config.getoption("pglite_no_oom_restart"):
+        values["restart_on_out_of_memory"] = False
+    reservation = _int_option(
+        config, "pglite_memory_reservation_mb", "--pglite-memory-reservation-mb"
+    )
+    if reservation is not None:
+        values["memory_reservation_mb"] = reservation
     try:
         cfg = PGliteConfig(**values)
     except ValueError as exc:
@@ -145,10 +214,36 @@ def pytest_report_header(config: pytest.Config) -> str | None:
     if cfg is None:
         return None
     extensions = ",".join(cfg.extensions) if cfg.extensions else "none"
+    policy = []
+    if cfg.restart_every_n_tests is not None:
+        policy.append(f"restart/{cfg.restart_every_n_tests} tests")
+    if cfg.heap_restart_mb is not None:
+        policy.append(f"restart above {cfg.heap_restart_mb} MiB")
+    if policy:
+        lifecycle = "heap " + ", ".join(policy)
+    else:
+        lifecycle = "no heap restart policy"
     return (
         f"pglite: PostgreSQL {cfg.pg_version} (native wasm), "
-        f"isolation={cfg.isolation.value}, extensions={extensions}"
+        f"isolation={cfg.isolation.value}, extensions={extensions}, {lifecycle}"
     )
+
+
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Count the finished test and apply the restart policy between tests.
+
+    Runs after the item's teardown, so no test fixture is still holding the
+    backend. Nothing happens when no server is running (a session that never
+    used a PGlite fixture, or a host that manages its own server).
+    """
+    for server in live_servers():
+        server.note_test_finished()
+        if nextitem is None:
+            # The last test in the run; a restart would only cost time.
+            continue
+        reason = server.consider_restart()
+        if reason:
+            _log.info("restarted the PGlite instance after %s", reason)
 
 
 # ----------------------------------------------------------------------
