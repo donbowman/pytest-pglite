@@ -1,24 +1,27 @@
 """Coarse performance guards.
 
-These use generous bounds so they only fail on catastrophic regressions
-(for example, losing the AOT or template caches).
+These exist to catch catastrophic regressions, such as losing the AOT or
+template caches. Caching is asserted on behaviour rather than wall clock: a
+timing bound cannot reliably separate a cold start from a warm one, because a
+cold start is only a couple of seconds on a fast machine while a warm start can
+be slower still on a loaded CI runner.
 """
 
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
 from pytest_pglite import PGliteConfig, PGliteServer
+from pytest_pglite import server as server_module
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
-def test_warm_start_and_query_latency() -> None:
-    started = time.perf_counter()
+def test_query_round_trip_latency() -> None:
     with PGliteServer(PGliteConfig()) as server:
-        startup = time.perf_counter() - started
         import psycopg
 
         with psycopg.connect(server.dsn) as connection:
@@ -29,23 +32,46 @@ def test_warm_start_and_query_latency() -> None:
                 connection.execute("select 1")
             per_query = (time.perf_counter() - begin) / 100
             connection.rollback()
-    assert startup < 10.0, f"warm start took {startup:.2f}s"
     assert per_query < 0.05, f"query round trip took {per_query * 1000:.1f}ms"
 
 
-def test_template_cache_reuse() -> None:
-    first = time.perf_counter()
+def test_template_is_reused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second start copies the cached template instead of rebuilding it.
+
+    A start that finds the template takes the copy fast path and never re-runs
+    the snapshot; a start that rebuilds it is the regression worth catching.
+    Both are directly observable, so there is no timing to be flaky.
+    """
+    snapshots: list[str] = []
+    sources: list[str] = []
+    original_snapshot = server_module._snapshot_base
+    original_copy = server_module._copy_tree
+
+    def counting_snapshot(base: Path, template: Path) -> None:
+        snapshots.append(str(template))
+        original_snapshot(base, template)
+
+    def counting_copy(source: Path, destination: Path) -> None:
+        sources.append(str(source))
+        original_copy(source, destination)
+
+    monkeypatch.setattr(server_module, "_snapshot_base", counting_snapshot)
+    monkeypatch.setattr(server_module, "_copy_tree", counting_copy)
+
     with PGliteServer(PGliteConfig()) as server:
         server.execute("select 1")
-    first_elapsed = time.perf_counter() - first
-    second = time.perf_counter()
+        template = server._template_path()
+    assert template is not None and template.is_dir(), "no template was cached"
+
+    snapshots_after_first_start = len(snapshots)
     with PGliteServer(PGliteConfig()) as server:
         server.execute("select 1")
-    second_elapsed = time.perf_counter() - second
-    # Both should be fast; the second must not be an order of magnitude worse.
-    assert second_elapsed < max(
-        5.0, first_elapsed * 3
-    ), f"second start {second_elapsed:.2f}s vs first {first_elapsed:.2f}s"
+
+    rebuilt = len(snapshots) - snapshots_after_first_start
+    assert rebuilt == 0, f"a second start rebuilt the template {rebuilt} time(s)"
+
+    source = sources[-1] if sources else None
+    assert source == str(template), f"a second start copied {source}"
 
 
 def test_extended_protocol_pipeline_is_coalesced() -> None:

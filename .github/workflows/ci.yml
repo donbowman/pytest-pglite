@@ -59,7 +59,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
       - name: Test suite with xdist
-        run: poetry run pytest -n 4 -q
+        run: poetry run pytest -n 4 -q -m "not slow"
+      - name: Slow tests, serial
+        # Kept out of the xdist pool: these measure caching behaviour, and
+        # competing with four parallel workers is what made them flaky.
+        run: poetry run pytest -q -m slow
       - name: Examples
         run: |
           poetry run pytest examples/fastapi-sqlalchemy -q
