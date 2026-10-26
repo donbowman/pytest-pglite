@@ -51,3 +51,18 @@ def test_work_dir_is_expanded() -> None:
     config = PGliteConfig(work_dir="~/somewhere")
     assert config.work_dir is not None
     assert "~" not in str(config.work_dir)
+
+
+def test_prepare_callable_and_key() -> None:
+    def prepare(server: object) -> None:
+        pass
+
+    config = PGliteConfig(prepare=prepare, prepare_key="alembic:0056")
+    assert config.prepare is prepare
+    assert config.prepare_key == "alembic:0056"
+    assert config.prepare_cache is True
+
+
+def test_rebuild_templates_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PGLITE_REBUILD_TEMPLATES", "true")
+    assert PGliteConfig().rebuild_templates is True

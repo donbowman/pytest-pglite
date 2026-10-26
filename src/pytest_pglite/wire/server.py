@@ -182,6 +182,7 @@ class WireServer:
     # lifecycle
     # ------------------------------------------------------------------
     async def start(self) -> None:
+        self._closing = False
         if self._socket_path is not None:
             self._socket_path.parent.mkdir(parents=True, exist_ok=True)
             if self._socket_path.exists():

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -110,6 +112,55 @@ class PGliteConfig(BaseSettings):
     template_cache: bool = Field(
         default=True,
         description=("Cache an initialised database directory so workers skip initdb."),
+    )
+    prepare: Callable[[Any], Any] | None = Field(
+        default=None,
+        description=(
+            "Callable run once on a fresh server to build the application's "
+            "schema, for example an Alembic upgrade. It receives the "
+            "PGliteServer, whose dsn/url/execute are usable while it runs. "
+            "The resulting data directory is cached and copied by every "
+            "worker instead of each worker migrating."
+        ),
+    )
+    prepare_key: str | None = Field(
+        default=None,
+        description=(
+            "Caller-supplied schema revision mixed into the prepare cache key, "
+            "for example 'alembic:0056'. Change it whenever the schema "
+            "changes, or workers will reuse the old database."
+        ),
+    )
+    prepare_cache: bool = Field(
+        default=True,
+        description=(
+            "Cache the data directory produced by prepare. Independent of "
+            "template_cache, which only covers the initdb half."
+        ),
+    )
+    template_cache_max_mb: int = Field(
+        default=2048,
+        ge=0,
+        description=(
+            "Size cap for the template cache, in MiB. Least-recently-published "
+            "templates are removed when it is exceeded; 0 disables pruning."
+        ),
+    )
+    template_lock_timeout: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "Seconds a worker waits for another worker to build the same "
+            "template. A dead builder releases its lock immediately; this "
+            "only bounds a builder that hangs."
+        ),
+    )
+    rebuild_templates: bool = Field(
+        default=False,
+        description=(
+            "Ignore and replace cached templates. Also set with "
+            "PGLITE_REBUILD_TEMPLATES=1 or --pglite-rebuild-templates."
+        ),
     )
     keep_tmp: bool = Field(default=False)
     log_level: str = Field(default="INFO")

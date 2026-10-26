@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
-import os
 import shutil
 import tempfile
 import threading
+import time
 import weakref
 from pathlib import Path
 from urllib.parse import quote
@@ -17,9 +18,19 @@ from platformdirs import user_cache_dir
 
 from . import aot
 from .artifacts import ensure_prefix, prepare_work_dir
-from .config import PGliteConfig
+from .config import IsolationMode, PGliteConfig
 from .engine import WasmEngine
 from .errors import PGliteConfigurationError, PGliteError
+from .templates import (
+    async_build_lock,
+    callable_identity,
+    cache_root,
+    copy_template,
+    prune_templates,
+    publish_template,
+    template_base,
+    template_key,
+)
 from .wire.server import WireServer
 
 SOCKET_NAME = ".s.PGSQL.5432"
@@ -36,26 +47,6 @@ _LIVE_SERVERS: weakref.WeakSet[PGliteServer] = weakref.WeakSet()
 def live_servers() -> tuple[PGliteServer, ...]:
     """Every PGlite server currently started in this process."""
     return tuple(_LIVE_SERVERS)
-
-
-def _copy_tree(source: Path, destination: Path) -> None:
-    if destination.exists():
-        shutil.rmtree(destination)
-    shutil.copytree(source, destination, copy_function=shutil.copy2)
-
-
-def _snapshot_base(base: Path, template: Path) -> None:
-    """Atomically copy an initialised data directory into the template cache."""
-    template.parent.mkdir(parents=True, exist_ok=True)
-    if template.exists():
-        return
-    tmp = template.with_name(f"{template.name}.tmp{os.getpid()}")
-    shutil.rmtree(tmp, ignore_errors=True)
-    try:
-        shutil.copytree(base, tmp, copy_function=shutil.copy2)
-        os.replace(tmp, template)
-    except OSError:
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 class PGliteServer:
@@ -423,31 +414,222 @@ class PGliteServer:
         assert engine is not None and wire is not None
         base = self._base_dir()
         template = self._template_path()
+        key = template.parent.name if template is not None else None
+        started_at = time.perf_counter()
         seeded = False
-        if template is not None and template.is_dir():
-            await asyncio.to_thread(_copy_tree, template, base)
-            seeded = True
+        template_failed = False
+
+        if self.config.prepare is not None and self.config.prepare_key is None:
+            self._log.warning(
+                "prepare is set without prepare_key; the cached schema will not "
+                "be invalidated when the migrations change"
+            )
+        if (
+            self.config.prepare is not None
+            and self.config.isolation is IsolationMode.SCHEMA
+        ):
+            self._log.warning(
+                "prepare is set with schema isolation, which drops the public "
+                "schema before each test; use isolation=transaction or none "
+                "for a prepared application schema"
+            )
+
+        if (
+            template is not None
+            and not self.config.rebuild_templates
+            and template.is_dir()
+        ):
+            try:
+                await asyncio.to_thread(copy_template, template, base)
+                seeded = True
+            except OSError as exc:
+                self._log.warning(
+                    "could not read template database %s (%s); rebuilding it",
+                    template,
+                    exc,
+                )
+                shutil.rmtree(base, ignore_errors=True)
+                template_failed = True
+
         try:
             await engine.arun(engine.start)
-        except Exception:
+        except Exception as exc:
             if not seeded:
                 raise
-            self._log.warning("template database unusable; rebuilding it")
+            self._log.warning(
+                "template database %s is unusable (%s); rebuilding it", template, exc
+            )
             shutil.rmtree(base, ignore_errors=True)
-            await engine.arun(engine.restart)
             seeded = False
+            template_failed = True
+            await engine.arun(engine.restart)
+
+        if seeded:
+            self._log.info(
+                "template cache hit %s in %.2fs",
+                key,
+                time.perf_counter() - started_at,
+            )
+
         for extension in self.config.extensions:
             await engine.arun(engine.ensure_extension, extension)
-        if template is not None and not seeded:
-            try:
-                await engine.arun(engine.shutdown_instance)
-                await asyncio.to_thread(_snapshot_base, base, template)
-                await engine.arun(engine.restart)
-            except Exception as exc:  # noqa: BLE001 - template is best effort
-                self._log.warning("could not create a template database: %s", exc)
-                if not engine.started:
-                    await engine.arun(engine.restart)
+
+        if self.config.prepare is not None and not seeded:
+            await self._prepare_and_publish(
+                engine, wire, base, template, adopt=not template_failed
+            )
+        elif template is not None and not seeded:
+            await self._publish_initdb_template(
+                engine, base, template, replace=template_failed
+            )
+
         await wire.start()
+
+    async def _adopt_template(
+        self, engine: WasmEngine, base: Path, template: Path
+    ) -> bool:
+        """Restart from a template another worker published while we waited."""
+        await engine.arun(engine.shutdown_instance)
+        try:
+            await asyncio.to_thread(copy_template, template, base)
+            await engine.arun(engine.restart)
+        except Exception as exc:  # noqa: BLE001 - a bad cache must not fail the run
+            self._log.warning(
+                "template database %s is unusable (%s); rebuilding it", template, exc
+            )
+            shutil.rmtree(base, ignore_errors=True)
+            await engine.arun(engine.restart)
+            return False
+        return True
+
+    async def _prepare_and_publish(
+        self,
+        engine: WasmEngine,
+        wire: WireServer,
+        base: Path,
+        template: Path | None,
+        *,
+        adopt: bool = True,
+    ) -> None:
+        """Run the caller's prepare hook once, behind the per-key lock."""
+        prepare = self.config.prepare
+        assert prepare is not None
+        if template is None:
+            started = time.perf_counter()
+            await self._run_prepare(engine, wire)
+            self._log.info(
+                "prepared schema in %.2fs (not cached)", time.perf_counter() - started
+            )
+            return
+
+        key = template.parent.name
+        started = time.perf_counter()
+        async with async_build_lock(
+            template.parent, key, timeout=self.config.template_lock_timeout
+        ) as locked:
+            if not locked:
+                self._log.warning(
+                    "timed out waiting for the template lock for %s; "
+                    "building without it",
+                    key,
+                )
+            if adopt and not self.config.rebuild_templates and template.is_dir():
+                if await self._adopt_template(engine, base, template):
+                    self._log.info(
+                        "template cache hit %s after waiting %.2fs",
+                        key,
+                        time.perf_counter() - started,
+                    )
+                    return
+
+            prepare_started = time.perf_counter()
+            await self._run_prepare(engine, wire)
+            prepare_seconds = time.perf_counter() - prepare_started
+
+            published = False
+            await engine.arun(engine.shutdown_instance)
+            try:
+                await asyncio.to_thread(publish_template, base, template)
+                published = True
+            except OSError as exc:
+                self._log.warning(
+                    "could not publish prepared template %s: %s", key, exc
+                )
+            finally:
+                await engine.arun(engine.restart)
+            if published:
+                self._prune_templates(template.parent, key)
+            self._log.info(
+                "template cache %s %s in %.2fs (prepare %.2fs)",
+                "built" if published else "publish failed",
+                key,
+                time.perf_counter() - started,
+                prepare_seconds,
+            )
+
+    async def _run_prepare(self, engine: WasmEngine, wire: WireServer) -> None:
+        """Expose the server to the prepare callable, then close its wire server.
+
+        The loop keeps running so the callable can connect over the Unix
+        socket or TCP exactly as it will during the tests.
+        """
+        prepare = self.config.prepare
+        assert prepare is not None
+        await wire.start()
+        self._started = True
+        try:
+            result = await asyncio.to_thread(prepare, self)
+            if inspect.isawaitable(result):
+                await result
+        finally:
+            self._started = False
+            await wire.stop()
+
+    async def _publish_initdb_template(
+        self, engine: WasmEngine, base: Path, template: Path, *, replace: bool = False
+    ) -> None:
+        """Publish the initdb-plus-extensions template (no prepare hook)."""
+        key = template.parent.name
+        started = time.perf_counter()
+        async with async_build_lock(
+            template.parent, key, timeout=self.config.template_lock_timeout
+        ) as locked:
+            if not locked:
+                self._log.warning(
+                    "timed out waiting for the template lock for %s; "
+                    "building without it",
+                    key,
+                )
+            if template.is_dir() and not self.config.rebuild_templates and not replace:
+                return
+            published = False
+            await engine.arun(engine.shutdown_instance)
+            try:
+                await asyncio.to_thread(publish_template, base, template)
+                published = True
+            except OSError as exc:
+                self._log.warning("could not create template database %s: %s", key, exc)
+            finally:
+                await engine.arun(engine.restart)
+            if published:
+                self._prune_templates(template.parent, key)
+                self._log.info(
+                    "template cache built %s in %.2fs",
+                    key,
+                    time.perf_counter() - started,
+                )
+
+    def _prune_templates(self, root: Path, keep_key: str) -> None:
+        cap = self.config.template_cache_max_mb << 20
+        if cap <= 0:
+            return
+        try:
+            removed = prune_templates(root, keep_key=keep_key, max_bytes=cap)
+        except OSError as exc:  # noqa: BLE001 - pruning is best effort
+            self._log.warning("could not prune the template cache: %s", exc)
+            return
+        if removed:
+            self._log.info("pruned template cache: %s", ", ".join(removed))
 
     def _base_dir(self) -> Path:
         if self._work_dir is None:
@@ -455,15 +637,20 @@ class PGliteServer:
         return self._work_dir / "tmp" / "pglite" / "base"
 
     def _template_path(self) -> Path | None:
-        if (
-            not self.config.template_cache
-            or self.config.work_dir is not None
-            or self._artifact_digest is None
-        ):
+        if self._artifact_digest is None or self.config.work_dir is not None:
             return None
-        extensions = "_".join(self.config.extensions) or "base"
-        key = f"{self._artifact_digest[:16]}-{extensions}"
-        return Path(user_cache_dir("pytest-pglite")) / "templates" / key / "base"
+        if self.config.prepare is not None:
+            if not self.config.prepare_cache:
+                return None
+            prepare_key = self.config.prepare_key or callable_identity(
+                self.config.prepare
+            )
+        else:
+            if not self.config.template_cache:
+                return None
+            prepare_key = None
+        key = template_key(self._artifact_digest, self.config.extensions, prepare_key)
+        return template_base(cache_root(), key)
 
     async def _async_stop(self) -> None:
         if self._wire is not None:

@@ -76,6 +76,7 @@ point, so there is nothing to import or configure.
 --pglite-work-dir=PATH            Directory for database files (default: temp dir)
 --pglite-wasm=PATH                Use a custom pglite.wasi build
 --pglite-keep-tmp                 Keep the temporary database directory
+--pglite-rebuild-templates        Ignore and replace cached database templates
 --pglite-log-level=INFO           Engine log level
 --pglite-restart-every=N          Restart the instance every N tests (see below)
 --pglite-heap-restart-mb=MB       Restart the instance when its guest heap exceeds MB
@@ -187,6 +188,53 @@ Each `pytest-xdist` worker process starts its own PGlite instance with its own
 temporary directory, its own Unix socket (or its own OS-assigned TCP port).
 There are no shared paths and no port collisions, so `pytest -n 4` just works.
 
+## Seeding an application schema
+
+A suite that runs migrations can build them once and publish the resulting data
+directory, so every xdist worker starts from a copy instead of each worker
+migrating at session start:
+
+```python
+# conftest.py
+import psycopg
+
+from pytest_pglite import IsolationMode
+
+
+def migrate(server):
+    with psycopg.connect(server.dsn) as connection:
+        ...  # Alembic, SQLAlchemy or plain SQL
+        connection.commit()
+
+
+def pytest_pglite_configure(pglite_config):
+    pglite_config.prepare = migrate
+    pglite_config.prepare_key = "alembic:0056"
+    pglite_config.isolation = IsolationMode.NONE
+```
+
+`prepare` runs once per cache key on a fresh server, with `server.dsn`,
+`server.url` and `server.execute` usable while it runs. The guest is then shut
+down cleanly so the directory is checkpointed, copied into the template cache
+and renamed into place. Workers that raced the builder wait on a `flock` and
+then copy the finished template; if the builder dies the kernel releases the
+lock, so the rest of the run continues. `prepare_key` is the caller's schema
+revision and must change whenever the migrations change. It is mixed with the
+artifact digest and the extension list, so a PostgreSQL bump or a schema change
+misses the cache instead of resuming the wrong catalog.
+
+The default `schema` isolation drops and recreates `public` around every test,
+which would remove the prepared application tables. Use `transaction` or `none`
+isolation with `prepare`.
+
+Templates live under the platform cache directory. `PGLITE_TEMPLATE_CACHE_MAX_MB`
+(default 2048) caps their total size and the least recently published entries
+are pruned; `0` disables pruning. `PGLITE_REBUILD_TEMPLATES=1` or
+`--pglite-rebuild-templates` ignores and replaces them. Startup logs one line
+with the cache key, whether it was a hit or a build, and the seconds. A corrupt
+template, or one whose guest will not start, is rebuilt with a warning instead
+of failing the session.
+
 ## How it works
 
 The package embeds `pglite.wasi`, a WebAssembly build of PostgreSQL 17.5 with
@@ -220,8 +268,11 @@ Measured on the development machine (Linux x86_64, CPython 3.14):
 | Aggregate over 200,000 rows | about 0.03 s |
 | Per-test schema reset | about 1 ms |
 
-Compiled-module files and an initialised database template are cached under
-the platform cache directory; `pytest-xdist` workers share them.
+Compiled-module files and database templates are cached under
+the platform cache directory; `pytest-xdist` workers share them. The initdb
+template caches the cluster after extensions are created; the `prepare` hook
+caches an application schema on top of it. Both are built once under a file
+lock, even when every worker starts at the same moment.
 
 ## Limitations
 

@@ -22,6 +22,10 @@ The compiled module and template live in the platform cache directory:
 poetry run python -c "from platformdirs import user_cache_dir; print(user_cache_dir('pytest-pglite'))"
 ```
 
+Cached templates are keyed by artifact, extensions and schema revision, so a
+stale database should normally be a key miss rather than a stale read. To force
+a rebuild anyway, run with `PGLITE_REBUILD_TEMPLATES=1`.
+
 ## Repository layout
 
 | Path | Purpose |
