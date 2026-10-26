@@ -44,8 +44,8 @@ def test_template_is_reused(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     snapshots: list[str] = []
     sources: list[str] = []
-    original_snapshot = server_module._snapshot_base
-    original_copy = server_module._copy_tree
+    original_snapshot = server_module.publish_template
+    original_copy = server_module.copy_template
 
     def counting_snapshot(base: Path, template: Path) -> None:
         snapshots.append(str(template))
@@ -55,8 +55,8 @@ def test_template_is_reused(monkeypatch: pytest.MonkeyPatch) -> None:
         sources.append(str(source))
         original_copy(source, destination)
 
-    monkeypatch.setattr(server_module, "_snapshot_base", counting_snapshot)
-    monkeypatch.setattr(server_module, "_copy_tree", counting_copy)
+    monkeypatch.setattr(server_module, "publish_template", counting_snapshot)
+    monkeypatch.setattr(server_module, "copy_template", counting_copy)
 
     with PGliteServer(PGliteConfig()) as server:
         server.execute("select 1")

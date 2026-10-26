@@ -69,6 +69,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Keep the temporary database directory after the session.",
     )
     group.addoption(
+        "--pglite-rebuild-templates",
+        action="store_true",
+        default=None,
+        help=(
+            "Ignore and replace cached database templates (also "
+            "PGLITE_REBUILD_TEMPLATES=1)."
+        ),
+    )
+    group.addoption(
         "--pglite-no-concurrent-index-rewrite",
         action="store_true",
         default=None,
@@ -170,6 +179,8 @@ def _config_from_options(config: pytest.Config) -> PGliteConfig:
     keep_tmp = config.getoption("pglite_keep_tmp")
     if keep_tmp is not None:
         values["keep_tmp"] = bool(keep_tmp)
+    if config.getoption("pglite_rebuild_templates"):
+        values["rebuild_templates"] = True
     if config.getoption("pglite_no_concurrent_index_rewrite"):
         values["rewrite_concurrent_index"] = False
     log_level = config.getoption("pglite_log_level")
@@ -204,9 +215,16 @@ def _config_from_options(config: pytest.Config) -> PGliteConfig:
     return cfg
 
 
+def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
+    from . import hookspecs
+
+    pluginmanager.add_hookspecs(hookspecs)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     cfg = _config_from_options(config)
     config._pglite_config = cfg  # type: ignore[attr-defined]
+    config.hook.pytest_pglite_configure(pglite_config=cfg)
 
 
 def pytest_report_header(config: pytest.Config) -> str | None:
