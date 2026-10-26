@@ -272,7 +272,9 @@ Compiled-module files and database templates are cached under
 the platform cache directory; `pytest-xdist` workers share them. The initdb
 template caches the cluster after extensions are created; the `prepare` hook
 caches an application schema on top of it. Both are built once under a file
-lock, even when every worker starts at the same moment.
+lock, even when every worker starts at the same moment. Compiled modules are
+staged under a per-writer temporary name and renamed into place, so workers
+that compile the same key at once cannot publish a truncated file.
 
 ## Limitations
 

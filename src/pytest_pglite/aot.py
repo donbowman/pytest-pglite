@@ -10,8 +10,10 @@ key includes the wasmtime version and the platform.
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import sys
+import tempfile
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -39,6 +41,33 @@ def cache_key(wasm_path: Path, artifact_digest: str | None = None) -> str:
     )
 
 
+def _publish(cache_dir: Path, cached: Path, module: wasmtime.Module) -> None:
+    """Serialise ``module`` and rename it into place.
+
+    Every writer stages under its own temporary name. A single shared staging
+    file would let a second worker truncate the first one's bytes mid-write and
+    then have the first worker rename the interleaved result into place, which
+    publishes a truncated ``.cwasm``. ``os.replace`` is atomic, so a reader
+    sees either the previous module or a complete new one.
+    """
+    temporary: Path | None = None
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(
+            dir=cache_dir, prefix=f".{cached.stem}.", suffix=".cwasm.tmp"
+        )
+        temporary = Path(name)
+        with os.fdopen(descriptor, "wb") as staging:
+            staging.write(module.serialize())
+        temporary.replace(cached)
+    except OSError:
+        # A read-only or full cache must never break the run.
+        pass
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def load_module(
     engine: wasmtime.Engine,
     wasm_path: Path,
@@ -53,17 +82,14 @@ def load_module(
             return wasmtime.Module.deserialize(engine, cached.read_bytes())
         except wasmtime.WasmtimeError:
             cached.unlink(missing_ok=True)
+        except OSError:
+            # Another worker is repairing or replacing the entry right now;
+            # compile locally instead of failing the run.
+            pass
     try:
         module = wasmtime.Module.from_file(engine, str(wasm_path))
     except wasmtime.WasmtimeError as exc:  # pragma: no cover - corrupt artifact
         raise PGliteArtifactError(f"failed to compile {wasm_path}: {exc}") from exc
     if use_cache:
-        try:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            temporary = cached.with_suffix(".cwasm.tmp")
-            temporary.write_bytes(module.serialize())
-            temporary.replace(cached)
-        except OSError:
-            # A read-only or full cache must never break the run.
-            pass
+        _publish(cache_dir, cached, module)
     return module
