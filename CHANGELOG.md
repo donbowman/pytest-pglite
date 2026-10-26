@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.0 (2026-10-26)
+
+### Features
+
+- Cache a prepared application schema across xdist workers
+  ([#18](https://github.com/donbowman/pytest-pglite/pull/18),
+  [`e2805d5`](https://github.com/donbowman/pytest-pglite/commit/e2805d5868106f721920ff617d3418f30a7b476f))
+
+
 ## v0.3.1 (2026-10-13)
 
 ### Bug Fixes
