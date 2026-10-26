@@ -64,7 +64,7 @@ include = [
 [tool.poetry.group.dev.dependencies]
 psycopg = { version = ">=3.3,<4", extras = ["binary"] }
 asyncpg = ">=0.31,<1"
-sqlalchemy = { version = ">=2.1,<3", extras = ["asyncio"] }
+sqlalchemy = { version = ">=2.1.6,<3", extras = ["asyncio"] }
 fastapi = ">=0.142,<1"
 httpx = ">=0.28,<1"
 uvicorn = ">=0.54,<1"
