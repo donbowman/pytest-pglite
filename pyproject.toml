@@ -65,7 +65,7 @@ include = [
 psycopg = { version = ">=3.3,<4", extras = ["binary"] }
 asyncpg = ">=0.31,<1"
 sqlalchemy = { version = ">=2.1.6,<3", extras = ["asyncio"] }
-fastapi = ">=0.161.1,<1"
+fastapi = ">=0.162.0,<1"
 httpx = ">=0.28,<1"
 uvicorn = ">=0.54,<1"
 django = ">=6.1.2,<7"
